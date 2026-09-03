@@ -54,11 +54,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Aditya31032006/migration-guardian.git"
+    "url": "git+https://github.com/Aditya31032006/agent-safe-migrate.git"
   },
-  "homepage": "https://github.com/Aditya31032006/migration-guardian#readme",
+  "homepage": "https://github.com/Aditya31032006/agent-safe-migrate#readme",
   "bugs": {
-    "url": "https://github.com/Aditya31032006/migration-guardian/issues"
+    "url": "https://github.com/Aditya31032006/agent-safe-migrate/issues"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.0",
