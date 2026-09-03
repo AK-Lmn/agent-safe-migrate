@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { promptAndApplyIfConfirmed } from '../../src/core/applier.js';
+import { promptAndApplyIfConfirmed, promptDestructiveConfirmation } from '../../src/core/applier.js';
 
 describe('Real Database Applier', () => {
   it('should not prompt or apply in CI mode', async () => {
@@ -15,5 +15,12 @@ describe('Real Database Applier', () => {
     });
     // In vitest headless environment, process.stdin.isTTY is falsy
     expect(applied).toBe(false);
+  });
+
+  it('should return false for destructive prompt in non-TTY/CI mode', async () => {
+    const approved = await promptDestructiveConfirmation([
+      { ruleId: 'MG006', ruleName: 'drop-table', sql: 'DROP TABLE users;' },
+    ], true);
+    expect(approved).toBe(false);
   });
 });

@@ -35,11 +35,30 @@ program
       const config = buildConfig(options);
       const format = options.ci ? 'json' : (config.output.format as OutputFormat);
 
-      const report = await runCheck(inputPath, config, 'run', (msg) => {
+      let report = await runCheck(inputPath, config, 'run', (msg) => {
         if (config.output.verbose && !options.ci) {
           console.error(`  ${msg}`);
         }
       });
+
+      // If blocked because of unconfirmed destructive operations in an interactive terminal, prompt user
+      if (
+        !report.passed &&
+        report.hasDestructive &&
+        !config.confirmDestructive &&
+        !options.ci &&
+        process.stdin.isTTY
+      ) {
+        const destructiveViolations = report.violations.filter(
+          (v) => v.ruleId === 'MG005' || v.ruleId === 'MG006'
+        );
+        const { promptDestructiveConfirmation } = await import('./core/applier.js');
+        const approved = await promptDestructiveConfirmation(destructiveViolations, options.ci);
+        if (approved) {
+          config.confirmDestructive = true;
+          report = await runCheck(inputPath, config, 'run');
+        }
+      }
 
       const output = renderReport(report, format);
       console.log(output);
@@ -82,11 +101,30 @@ program
       const config = buildConfig(options);
       const format = options.ci ? 'json' : (config.output.format as OutputFormat);
 
-      const report = await runCheck(inputPath, config, 'analyze', (msg) => {
+      let report = await runCheck(inputPath, config, 'analyze', (msg) => {
         if (config.output.verbose && !options.ci) {
           console.error(`  ${msg}`);
         }
       });
+
+      // If blocked because of unconfirmed destructive operations in an interactive terminal, prompt user
+      if (
+        !report.passed &&
+        report.hasDestructive &&
+        !config.confirmDestructive &&
+        !options.ci &&
+        process.stdin.isTTY
+      ) {
+        const destructiveViolations = report.violations.filter(
+          (v) => v.ruleId === 'MG005' || v.ruleId === 'MG006'
+        );
+        const { promptDestructiveConfirmation } = await import('./core/applier.js');
+        const approved = await promptDestructiveConfirmation(destructiveViolations, options.ci);
+        if (approved) {
+          config.confirmDestructive = true;
+          report = await runCheck(inputPath, config, 'analyze');
+        }
+      }
 
       const output = renderReport(report, format);
       console.log(output);

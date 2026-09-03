@@ -65,11 +65,19 @@ export function runMcpTools(server: McpServer) {
 
         logActivityFromReport('check_migration', report);
 
+        const responseData = {
+          ...report,
+          destructiveActionRequired:
+            report.hasDestructive && !confirm_destructive
+              ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP TABLE or DROP COLUMN) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP TABLE/COLUMN). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
+              : undefined,
+        };
+
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify(report, null, 2),
+              text: JSON.stringify(responseData, null, 2),
             },
           ],
         };

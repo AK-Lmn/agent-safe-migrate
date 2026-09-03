@@ -7,7 +7,7 @@
 // Core
 export { runCheck } from './core/engine.js';
 export { loadConfig, getRuleSeverity } from './core/config.js';
-export { applyToRealDatabase, promptAndApplyIfConfirmed } from './core/applier.js';
+export { applyToRealDatabase, promptAndApplyIfConfirmed, promptDestructiveConfirmation } from './core/applier.js';
 export type {
   MigrationReport,
   DetectedMigration,

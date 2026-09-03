@@ -120,3 +120,43 @@ export async function promptAndApplyIfConfirmed(
     return false;
   }
 }
+
+/**
+ * Prompts the user interactively when destructive operations (DROP TABLE/COLUMN)
+ * are detected to ask if they approve running this destructive code.
+ */
+export async function promptDestructiveConfirmation(
+  violations: Array<{ ruleId: string; ruleName: string; sql: string; line?: number }>,
+  isCi?: boolean
+): Promise<boolean> {
+  if (isCi || !process.stdin.isTTY) {
+    return false;
+  }
+
+  console.log('\n' + chalk.bold.red('  🚨 DESTRUCTIVE DATABASE OPERATION DETECTED!'));
+  console.log(chalk.red('  ─────────────────────────────────────────────────────────'));
+  console.log(chalk.white('  The following operations permanently delete data and are IRREVERSIBLE:'));
+  for (const v of violations) {
+    const lineInfo = v.line ? `Line ${v.line}: ` : '';
+    console.log(`  ${chalk.red('•')} ${chalk.yellow(v.ruleId)} (${v.ruleName}) - ${chalk.dim(lineInfo)}${chalk.white(v.sql.replace(/\s+/g, ' ').trim())}`);
+  }
+  console.log(chalk.red('  ─────────────────────────────────────────────────────────\n'));
+
+  const rl = readline.createInterface({ input, output });
+  try {
+    const answer = await rl.question(
+      chalk.bold.yellow('  ⚠️  Do you allow this destructive migration to proceed? ') + chalk.dim('[y/N] ')
+    );
+    const trimmed = answer.trim().toLowerCase();
+    const approved = trimmed === 'y' || trimmed === 'yes';
+    if (approved) {
+      console.log(chalk.green('\n  ✅ Destructive operation explicitly approved by user.\n'));
+    } else {
+      console.log(chalk.red('\n  ❌ Destructive operation rejected. Migration blocked.\n'));
+    }
+    return approved;
+  } finally {
+    rl.close();
+  }
+}
+
