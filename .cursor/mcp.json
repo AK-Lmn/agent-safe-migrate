@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "migration-guardian": {
+      "command": "node",
+      "args": [
+        "C:\\Users\\adity\\Desktop\\sql_migration\\dist\\mcp\\server.js"
+      ]
+    }
+  }
+}

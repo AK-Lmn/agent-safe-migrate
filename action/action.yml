@@ -1,0 +1,72 @@
+name: 'Migration Guardian'
+description: 'Check database migrations for safety issues against a shadow PostgreSQL database'
+author: 'Migration Guardian Contributors'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  migration-path:
+    description: 'Path to migration file or directory'
+    required: true
+  seed-path:
+    description: 'Path to base schema SQL file'
+    required: false
+    default: ''
+  confirm-destructive:
+    description: 'Allow destructive operations (DROP TABLE, DROP COLUMN)'
+    required: false
+    default: 'false'
+  provider:
+    description: 'Shadow DB provider: docker | pglite'
+    required: false
+    default: 'pglite'
+  docker-image:
+    description: 'Postgres Docker image'
+    required: false
+    default: 'postgres:16-alpine'
+
+outputs:
+  result:
+    description: 'JSON report of the migration check'
+  passed:
+    description: 'Whether the migration passed all checks (true/false)'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run Migration Guardian
+      shell: bash
+      id: mgcheck
+      run: |
+        ARGS="run ${{ inputs.migration-path }} --ci --format json --provider ${{ inputs.provider }} --docker-image ${{ inputs.docker-image }}"
+        
+        if [ -n "${{ inputs.seed-path }}" ]; then
+          ARGS="$ARGS --seed ${{ inputs.seed-path }}"
+        fi
+        
+        if [ "${{ inputs.confirm-destructive }}" = "true" ]; then
+          ARGS="$ARGS --confirm-destructive"
+        fi
+        
+        set +e
+        RESULT=$(npx mgcheck@latest $ARGS 2>&1)
+        EXIT_CODE=$?
+        set -e
+        
+        echo "result<<EOF" >> $GITHUB_OUTPUT
+        echo "$RESULT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 2 ]; then
+          echo "passed=true" >> $GITHUB_OUTPUT
+        else
+          echo "passed=false" >> $GITHUB_OUTPUT
+        fi
+        
+        exit $EXIT_CODE
