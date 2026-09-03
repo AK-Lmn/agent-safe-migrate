@@ -185,10 +185,11 @@ const GUARDIAN_RULE_CONTENT = `${GUARDIAN_RULE_BANNER}
 ## Database Migration Safety (Enforced by Migration Guardian)
 
 When creating, modifying, or executing database migrations (SQL, Prisma, Drizzle, TypeORM, Knex, etc.):
-1. **NEVER execute raw DDL or database migrations directly** on local, staging, or production databases without prior safety checks.
-2. **ALWAYS use Migration Guardian (\`mgcheck\`)**:
-   - If MCP tools are available, invoke \\\`check_migration\\\` (or \\\`analyze_migration\\\` for static analysis).
-   - Alternatively, run \\\`npx mgcheck analyze <path>\\\` or \\\`npx mgcheck run <path> --provider pglite\\\` in terminal.
+1. **NEVER execute raw DDL or database migrations directly** on databases without prior safety verification.
+2. **Standard 3-Step AI Workflow**:
+   - **Step 1 (Verify)**: Call \\\`check_migration\\\` (or \\\`analyze_migration\\\`) to test against the disposable shadow DB and AST safety rules.
+   - **Step 2 (Prompt User)**: Once verified safe (0 blocking errors), ask the human user: *"Migration verified safe (0 errors). Would you like me to apply it to your database now?"*.
+   - **Step 3 (Apply)**: When the user confirms "yes", call \\\`apply_migration\\\` with \\\`confirm_user_approved: true\\\` to execute the migration against their target database!
 3. **Follow Zero-Downtime Migration Standards**:
    - \\\`MG001\\\`: Always use \\\`CREATE INDEX CONCURRENTLY\\\` instead of blocking indexes.
    - \\\`MG002\\\`: Never use \\\`ALTER COLUMN TYPE\\\` directly (use expand/contract pattern).

@@ -152,6 +152,121 @@ export function runMcpTools(server: McpServer) {
       }
     }
   );
+
+  // Tool 3: apply_migration — applies verified SQL directly to target database
+  server.tool(
+    'apply_migration',
+    'Apply a verified SQL migration directly to the real target database. Use this ONLY after verifying with check_migration and receiving explicit user confirmation in chat.',
+    {
+      migration_sql: z
+        .string()
+        .describe('The SQL content of the migration to apply to the real database'),
+      db_url: z
+        .string()
+        .optional()
+        .describe(
+          'Target PostgreSQL connection URL. Defaults to DATABASE_URL or TARGET_DATABASE_URL environment variables.'
+        ),
+      confirm_user_approved: z
+        .boolean()
+        .describe(
+          'Must be set to true to certify that the human user explicitly requested or approved applying this migration.'
+        ),
+    },
+    async ({ migration_sql, db_url, confirm_user_approved }) => {
+      try {
+        if (!confirm_user_approved) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  {
+                    success: false,
+                    error:
+                      'User confirmation required. You must ask the human user for approval before calling apply_migration with confirm_user_approved: true.',
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const targetUrl =
+          db_url ||
+          process.env.TARGET_DATABASE_URL ||
+          process.env.DATABASE_URL;
+
+        if (!targetUrl) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  {
+                    success: false,
+                    error:
+                      'No database connection URL found. Please pass db_url or set the DATABASE_URL environment variable.',
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const { applyToRealDatabase } = await import('../core/applier.js');
+        const result = await applyToRealDatabase(migration_sql, targetUrl);
+
+        logActivity({
+          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+          tool: 'apply_migration',
+          summary: result.success
+            ? `Applied to real database (${result.executionTimeMs}ms)`
+            : `Failed on real database: ${result.error}`,
+          violations: 0,
+          errors: result.success ? 0 : 1,
+          warnings: 0,
+          passed: result.success,
+          statements: migration_sql
+            .split(';')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        });
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                {
+                  success: false,
+                  error: (err as Error).message,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
 }
 
 /**
