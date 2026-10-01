@@ -103,10 +103,10 @@ npx mgcheck
 ```
 
 **What it does automatically:**
-* 🔍 Detects your AI editors (**Cursor, Claude, Antigravity, Windsurf, Copilot**).
-* ⚙️ Configures the MCP server so AI agents can call `check_migration` natively.
-* 📝 Injects database safety rules into `.cursor/rules/`, `CLAUDE.md`, and `AGENTS.md`.
-* 👁️ Starts **Live Watch Mode** to monitor and stream AI migration checks in real-time!
+* 🔍 **Auto-detects installed AI agents**: Google Antigravity, Cursor IDE, Claude Desktop, Claude Code CLI, Cline, Roo Code, Continue.dev, Windsurf, Zed Editor, Goose, Aider, OpenHands, and VS Code + Copilot.
+* ⚙️ **Configures MCP & Safety Linters**: Zero workspace clutter — wires up native MCP and linter configs globally.
+* 🛡️ **Installs Git Pre-Commit Safety Hook**: Automatically catches staged `.sql` migrations and blocks unsafe commits.
+* 👁️ **Starts Live Guardian Watcher**: Monitors queries in real-time with human-in-the-loop approval prompts for risky DDL.
 
 ---
 
@@ -121,6 +121,15 @@ npx mgcheck analyze ./migrations/0001_add_users.sql
 
 # Test against seed schema
 npx mgcheck run ./migrations/0002_add_index.sql --seed ./schema.sql
+
+# Connect to a specific agent directly
+npx mgcheck setup --client cline       # VS Code Cline
+npx mgcheck setup --client roo         # Roo Code
+npx mgcheck setup --client claude-code # Claude Code CLI
+npx mgcheck setup --client continue    # Continue.dev (VS Code & JetBrains)
+npx mgcheck setup --client zed         # Zed Editor
+npx mgcheck setup --client goose       # Goose (Block)
+npx mgcheck setup --client aider       # Aider CLI
 
 # Automated CI Gate (outputs JSON + non-zero exit code on failure)
 npx mgcheck run ./migrations --ci
@@ -153,26 +162,41 @@ npx mgcheck run ./migrations --ci
 | **True Postgres AST Parser** | ⚠️ Regex | ⚠️ Regex | ✅ | ✅ **Official `pgsql-parser` (WASM)** |
 | **In-Process Shadow DB (No Docker needed)** | ❌ | ❌ | ❌ | ✅ **PGlite WASM Engine** |
 | **Docker Shadow DB Provider** | ❌ | ❌ | ✅ | ✅ **Full Postgres Fidelity** |
-| **MCP Server for AI Agents (Cursor/Claude)** | ❌ | ❌ | ❌ | ✅ **Native MCP Support** |
-| **1-Click Agent Rule Injection** | ❌ | ❌ | ❌ | ✅ **`.cursorrules`, `CLAUDE.md`, `AGENTS.md`** |
+| **Multi-Agent MCP Integration (13 Agents)** | ❌ | ❌ | ❌ | ✅ **Native MCP across all 13 Agents** |
+| **Pre-Commit Defense Gate** | ❌ | ❌ | ❌ | ✅ **Built-in `mgcheck hook install`** |
 | **Interactive Real DB Applier** | ❌ | ❌ | ❌ | ✅ **Prompt & Apply Verified SQL** |
 | **Live Terminal Watch Mode** | ❌ | ❌ | ❌ | ✅ **Real-Time Stream** |
 
 ---
 
-## 🤖 AI Coding Agent Integration (MCP)
+## 🤖 Universal AI Coding Agent Shield (13 Supported Agents)
 
-Migration Guardian exposes an official **Model Context Protocol (MCP)** server:
+Migration Guardian shields every major AI coding assistant from writing dangerous migrations:
 
-* `check_migration`: Full shadow execution + 10 AST safety rules + suggested safe rewrites.
-* `analyze_migration`: Ultra-fast static AST linting.
+| AI Agent | Type | Shield Integration |
+| :--- | :--- | :--- |
+| **Google Antigravity** | Agentic IDE | Global MCP Server (`~/.gemini/config/mcp_config.json`) |
+| **Cursor IDE** | AI Code Editor | Global MCP (`~/.cursor/mcp.json`) & Workspace Rules |
+| **Claude Desktop** | Desktop AI | Global Config (`claude_desktop_config.json`) |
+| **Claude Code CLI** | Terminal Agent | Global MCP Config (`~/.claude.json`) |
+| **Cline (VS Code)** | Autonomous Agent | Global MCP Settings (`cline_mcp_settings.json`) |
+| **Roo Code (VS Code)** | Multi-Persona Agent | Global MCP Settings (`cline_mcp_settings.json`) |
+| **Continue.dev** | VS Code & JetBrains | Global Config (`~/.continue/config.json`) |
+| **Windsurf (Codeium)** | Agentic IDE | Global MCP Server (`~/.codeium/windsurf/mcp_config.json`) |
+| **Zed Editor** | Rust Editor | Context Server (`settings.json`) |
+| **Goose (Block)** | On-Machine Agent | Extensions Config (`config.yaml`) |
+| **Aider** | CLI Pair Programmer | Safety Linter (`~/.aider.conf.yml`) + Pre-Commit Hook |
+| **OpenHands** | Autonomous SE | Microagent Guardian Rules (`~/.openhands/microagents/`) |
+| **VS Code + Copilot** | Extension | Git Pre-Commit Hook (`mgcheck hook install`) |
+
+### Standard MCP Configuration
 
 ```json
 {
   "mcpServers": {
     "migration-guardian": {
       "command": "npx",
-      "args": ["mgcheck", "mcp"]
+      "args": ["-y", "mgcheck", "mcp"]
     }
   }
 }

@@ -39,3 +39,13 @@ export { createShadowDatabase } from './shadow/index.js';
 
 // Reporter
 export { renderReport, getExitCode } from './reporter/index.js';
+
+// Installer & AI Integrations
+export {
+  detectClients,
+  setupMcp,
+  verifyConnections,
+  installGitHook,
+  injectAgentRules,
+} from './installer/index.js';
+export type { SetupOptions, DetectedClient, DetectResult } from './installer/index.js';

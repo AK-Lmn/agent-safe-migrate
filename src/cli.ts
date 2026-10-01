@@ -155,12 +155,17 @@ program
   .command('setup')
   .alias('init')
   .alias('install-mcp')
-  .description('Interactive wizard to connect Migration Guardian to Antigravity, Cursor, and Claude')
+  .description('Interactive wizard to connect Migration Guardian to AI agents (Antigravity, Cursor, Claude, Cline, Roo, Zed, Continue, Goose, Aider, OpenHands, Windsurf)')
   .option('-y, --yes', 'Skip confirmation prompt and connect automatically', false)
-  .option('--client <client>', 'Target client: antigravity | claude | cursor | all', 'all')
+  .option(
+    '--client <client>',
+    'Target client: antigravity | cursor | claude | claude-code | cline | roo | continue | windsurf | zed | goose | aider | openhands | all',
+    'all'
+  )
+  .option('--with-rules', 'Also write workspace AI rule files (.cursorrules, CLAUDE.md, etc.)', false)
   .action(async (options: any) => {
     const { runInteractiveWizard } = await import('./installer/index.js');
-    await runInteractiveWizard({ yes: options.yes, client: options.client });
+    await runInteractiveWizard({ yes: options.yes, client: options.client, withRules: options.withRules });
   });
 
 // ─── mgcheck hook ───────────────────────────────────────────────────

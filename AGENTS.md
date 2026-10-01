@@ -57,8 +57,10 @@ All v0 deliverables from the project spec are fully implemented, typed, and test
    - `src/cli.ts` (`dist/cli.js`): Commander CLI with `run`, `analyze`, `setup`, and `mcp` commands.
    - `src/index.ts` (`dist/index.js`): Programmatic TypeScript API.
 8. **MCP Server & Agent Setup** (`src/mcp/`, `src/installer/`):
-   - Exposes `check_migration` (full shadow execution) and `analyze_migration` (static only) for AI coding agents.
-   - Automated setup wizard configures MCP servers and injects prompt rules into `.cursorrules`, `CLAUDE.md`, `AGENTS.md`, `.windsurfrules`, `.github/copilot-instructions.md`.
+   - Exposes `check_migration` (full shadow execution), `analyze_migration` (static only), and `apply_migration` (with in-code AST gate) for AI coding agents.
+   - Automated setup wizard auto-detects all 13 AI agents (Google Antigravity, Cursor, Claude Desktop, Claude Code, Cline, Roo Code, Continue.dev, Windsurf, Zed, Goose, Aider, OpenHands, VS Code + Copilot).
+   - Injects prompt rules into `.cursorrules`, `CLAUDE.md`, `AGENTS.md`, `.windsurfrules`, `.github/copilot-instructions.md`, `.clinerules`.
+   - Git pre-commit hook (`mgcheck hook install`) automatically guards any commits containing unsafe migrations.
 9. **CI & Packaging**:
    - `action/action.yml`: Composite GitHub Action.
    - `.github/workflows/ci.yml`: Automated CI pipeline (lint, test, build).
