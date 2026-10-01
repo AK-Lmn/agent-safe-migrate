@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runCheck } from '../core/engine.js';
@@ -172,8 +172,15 @@ export function runMcpTools(server: McpServer) {
         .describe(
           'Must be set to true to certify that the human user explicitly requested or approved applying this migration.'
         ),
+      confirm_destructive: z
+        .boolean()
+        .default(false)
+        .optional()
+        .describe(
+          'Set to true only if the human user explicitly confirmed performing a destructive operation (DROP TABLE/COLUMN).'
+        ),
     },
-    async ({ migration_sql, db_url, confirm_user_approved }) => {
+    async ({ migration_sql, db_url, confirm_user_approved, confirm_destructive }) => {
       try {
         if (!confirm_user_approved) {
           return {
@@ -193,6 +200,52 @@ export function runMcpTools(server: McpServer) {
             ],
             isError: true,
           };
+        }
+
+        // ── Ironclad In-Code AST Gate ───────────────────────────────────────
+        // Even if an AI attempts to bypass verification, verify safety right here.
+        const verifyDir = mkdtempSync(join(tmpdir(), 'mgcheck-apply-verify-'));
+        const verifyFile = join(verifyDir, 'migration.sql');
+        writeFileSync(verifyFile, migration_sql, 'utf-8');
+
+        try {
+          const verifyConfig = loadConfig({
+            confirmDestructive: confirm_destructive ?? false,
+            output: { format: 'json', verbose: false },
+          });
+
+          const preCheckReport = await runCheck(verifyFile, verifyConfig, 'analyze');
+          const blockingErrors = preCheckReport.violations.filter(
+            (v) => v.severity === 'error'
+          );
+
+          if (blockingErrors.length > 0) {
+            const violationSummary = blockingErrors
+              .map((v) => `[${v.ruleId}] ${v.message} (Line ${v.line})`)
+              .join('; ');
+
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify(
+                    {
+                      success: false,
+                      error: `SECURITY GATE REJECTION: Cannot apply migration to real database. Detected ${blockingErrors.length} blocking safety violation(s): ${violationSummary}. You must fix these violations before applying.`,
+                      violations: blockingErrors,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+        } finally {
+          try {
+            rmSync(verifyDir, { recursive: true, force: true });
+          } catch {}
         }
 
         const targetUrl =

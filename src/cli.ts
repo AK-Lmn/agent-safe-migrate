@@ -163,6 +163,24 @@ program
     await runInteractiveWizard({ yes: options.yes, client: options.client });
   });
 
+// ─── mgcheck hook ───────────────────────────────────────────────────
+
+program
+  .command('hook')
+  .description('Install Git pre-commit safety hooks in the current repository')
+  .argument('[action]', 'Action to perform: install | status', 'install')
+  .action(async (action: string) => {
+    const { installGitHook } = await import('./installer/index.js');
+    if (action === 'install') {
+      const res = installGitHook(process.cwd());
+      if (res) {
+        console.log(`\n${res}\n`);
+      } else {
+        console.log('\n  ℹ️  No .git repository found in current directory. Skipped.\n');
+      }
+    }
+  });
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function buildConfig(options: any): MgcheckConfig {

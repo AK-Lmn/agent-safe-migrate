@@ -16,7 +16,7 @@
 
 ## 2. Current Implementation Status: **v0 (Complete & Verified)**
 
-All v0 deliverables from the project spec are fully implemented, typed, and tested (30/30 tests passing).
+All v0 deliverables from the project spec are fully implemented, typed, and tested (37/37 tests passing).
 
 ### Completed Components:
 1. **Migration Format Detector** (`src/detector/`):
@@ -92,6 +92,9 @@ node dist/cli.js run ./test/fixtures/migrations/safe-add-column.sql --provider p
 node dist/cli.js mcp
 # Or with MCP Inspector UI:
 npx @modelcontextprotocol/inspector node dist/mcp/server.js
+
+# Install Git Pre-Commit Safety Hook
+node dist/cli.js hook install
 ```
 
 ---

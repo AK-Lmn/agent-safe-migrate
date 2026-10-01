@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, dirname } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import os from 'node:os';
@@ -64,11 +63,13 @@ export function detectClients(): DetectResult {
  */
 export function setupMcp(options: SetupOptions = {}): string[] {
   const targetClient = options.client || 'all';
-  const currentDir = dirname(fileURLToPath(import.meta.url));
-  const serverPath = resolve(currentDir, './mcp/server.js');
-  const fallbackPath = resolve(currentDir, '../dist/mcp/server.js');
-  const finalServerPath = existsSync(serverPath) ? serverPath : fallbackPath;
   const results: string[] = [];
+
+  // Generalized, portable MCP command that runs on any machine / OS
+  const mcpServerConfig = {
+    command: 'npx',
+    args: ['-y', 'mgcheck', 'mcp'],
+  };
 
   // 1. Antigravity Configuration (~/.gemini/config/mcp_config.json)
   if (targetClient === 'all' || targetClient === 'antigravity') {
@@ -90,10 +91,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
         }
       }
 
-      config.mcpServers['migration-guardian'] = {
-        command: 'node',
-        args: [finalServerPath],
-      };
+      config.mcpServers['migration-guardian'] = mcpServerConfig;
 
       writeFileSync(mcpConfigFile, JSON.stringify(config, null, 2), 'utf-8');
       results.push(chalk.green('  ✅ Google Antigravity') + chalk.dim(` (${mcpConfigFile})`));
@@ -122,10 +120,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
         }
       }
 
-      config.mcpServers['migration-guardian'] = {
-        command: 'node',
-        args: [finalServerPath],
-      };
+      config.mcpServers['migration-guardian'] = mcpServerConfig;
 
       writeFileSync(cursorFile, JSON.stringify(config, null, 2), 'utf-8');
       results.push(chalk.green('  ✅ Cursor IDE') + chalk.dim(` (${cursorFile})`));
@@ -159,10 +154,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
           }
         }
 
-        config.mcpServers['migration-guardian'] = {
-          command: 'node',
-          args: [finalServerPath],
-        };
+        config.mcpServers['migration-guardian'] = mcpServerConfig;
 
         writeFileSync(claudeConfigFile, JSON.stringify(config, null, 2), 'utf-8');
       } else if (targetClient === 'claude') {
@@ -177,7 +169,60 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   const ruleResults = injectAgentRules(process.cwd());
   results.push(...ruleResults);
 
+  // 5. Install Git Pre-Commit Safety Hook if in a git repository
+  const hookResult = installGitHook(process.cwd());
+  if (hookResult) results.push(hookResult);
+
   return results;
+}
+
+/**
+ * Installs Git pre-commit safety hook in workspace if .git directory exists.
+ */
+export function installGitHook(workspaceDir: string = process.cwd()): string | null {
+  try {
+    const gitDir = join(workspaceDir, '.git');
+    if (!existsSync(gitDir)) {
+      return null;
+    }
+
+    const hooksDir = join(gitDir, 'hooks');
+    if (!existsSync(hooksDir)) {
+      mkdirSync(hooksDir, { recursive: true });
+    }
+
+    const hookFile = join(hooksDir, 'pre-commit');
+    const hookScript = `#!/bin/sh
+# Migration Guardian Git Pre-Commit Safety Hook
+# Automatically blocks commits containing unsafe database migrations.
+
+STAGED_MIGRATIONS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\\.(sql)$')
+
+if [ -n "$STAGED_MIGRATIONS" ]; then
+  echo "🛡️  Migration Guardian: Checking staged migrations for safety..."
+  for file in $STAGED_MIGRATIONS; do
+    if [ -f "$file" ]; then
+      npx mgcheck run "$file" --provider pglite --ci
+      EXIT_CODE=$?
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo ""
+        echo "❌ Migration Guardian: Commit rejected! Unsafe database migration detected in $file."
+        echo "💡 Run 'npx mgcheck analyze $file' to see safe rewrite recommendations."
+        echo ""
+        exit $EXIT_CODE
+      fi
+    fi
+  done
+  echo "✅ Migration Guardian: All staged migrations verified safe."
+fi
+exit 0
+`;
+
+    writeFileSync(hookFile, hookScript, { encoding: 'utf-8', mode: 0o755 });
+    return chalk.green('  ✅ Git Pre-Commit Hook') + chalk.dim(` (${hookFile})`);
+  } catch (err) {
+    return chalk.yellow('  ⚠️  Git Hook: ') + (err as Error).message;
+  }
 }
 
 const GUARDIAN_RULE_BANNER = '<!-- MIGRATION GUARDIAN SAFETY RULES -->';
