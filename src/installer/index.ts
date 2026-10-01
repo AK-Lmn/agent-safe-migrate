@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import os from 'node:os';
@@ -18,37 +19,64 @@ export interface DetectResult {
 }
 
 /**
- * Detect which AI editors/clients are installed on the user's system or workspace.
+ * Dynamically check if a CLI command or binary exists in PATH.
+ */
+function isCommandAvailable(cmd: string): boolean {
+  try {
+    const testCmd = process.platform === 'win32' ? `where.exe ${cmd}` : `which ${cmd}`;
+    execSync(testCmd, { stdio: 'ignore', timeout: 1500 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect which AI editors/clients are installed on the user's system dynamically.
+ * Validates against system executables, PATH binaries, and OS app registries,
+ * avoiding false positives from checked-in repository directories.
  */
 export function detectClients(): DetectResult {
   // 1. Antigravity check
   const geminiDir = join(os.homedir(), '.gemini');
-  const antigravity = existsSync(geminiDir);
+  const antigravity = Boolean(
+    process.env.ANTIGRAVITY_APP_DIR ||
+    process.env.ANTIGRAVITY_IDE ||
+    existsSync(join(geminiDir, 'antigravity-ide')) ||
+    existsSync(geminiDir)
+  );
 
-  // 2. Cursor check (local .cursor or system Cursor install)
-  const localCursor = existsSync(join(process.cwd(), '.cursor'));
-  let systemCursor = false;
-  if (process.platform === 'win32') {
-    systemCursor = existsSync(join(process.env.APPDATA || '', 'Cursor')) ||
-                   existsSync(join(process.env.LOCALAPPDATA || '', 'Programs', 'cursor'));
-  } else if (process.platform === 'darwin') {
-    systemCursor = existsSync('/Applications/Cursor.app') ||
-                   existsSync(join(os.homedir(), 'Applications', 'Cursor.app'));
-  } else {
-    systemCursor = existsSync(join(os.homedir(), '.config', 'Cursor'));
+  // 2. Cursor check: dynamically check if cursor binary or app is installed on the OS
+  let cursor = isCommandAvailable('cursor');
+  if (!cursor) {
+    if (process.platform === 'win32') {
+      const localAppData = process.env.LOCALAPPDATA || '';
+      const programFiles = process.env.ProgramFiles || '';
+      cursor = existsSync(join(localAppData, 'Programs', 'cursor', 'Cursor.exe')) ||
+               existsSync(join(programFiles, 'Cursor', 'Cursor.exe'));
+    } else if (process.platform === 'darwin') {
+      cursor = existsSync('/Applications/Cursor.app') ||
+               existsSync(join(os.homedir(), 'Applications', 'Cursor.app'));
+    } else {
+      cursor = existsSync('/opt/Cursor/cursor');
+    }
   }
-  const cursor = localCursor || systemCursor;
 
-  // 3. Claude Desktop check
-  let claudeDir = '';
-  if (process.platform === 'win32') {
-    claudeDir = join(process.env.APPDATA || '', 'Claude');
-  } else if (process.platform === 'darwin') {
-    claudeDir = join(os.homedir(), 'Library', 'Application Support', 'Claude');
-  } else {
-    claudeDir = join(os.homedir(), '.config', 'Claude');
+  // 3. Claude Desktop check: check binary in PATH or app on OS
+  let claude = isCommandAvailable('claude');
+  if (!claude) {
+    if (process.platform === 'win32') {
+      const localAppData = process.env.LOCALAPPDATA || '';
+      const appData = process.env.APPDATA || '';
+      claude = existsSync(join(localAppData, 'Programs', 'Claude', 'Claude.exe')) ||
+               existsSync(join(appData, 'Claude', 'Claude.exe'));
+    } else if (process.platform === 'darwin') {
+      claude = existsSync('/Applications/Claude.app') ||
+               existsSync(join(os.homedir(), 'Applications', 'Claude.app'));
+    } else {
+      claude = existsSync(join(os.homedir(), '.config', 'Claude'));
+    }
   }
-  const claude = existsSync(claudeDir);
 
   return {
     antigravity,
