@@ -44,8 +44,10 @@ export { renderReport, getExitCode } from './reporter/index.js';
 export {
   detectClients,
   setupMcp,
+  uninstallMcp,
   verifyConnections,
   installGitHook,
+  uninstallGitHook,
   injectAgentRules,
 } from './installer/index.js';
 export type { SetupOptions, DetectedClient, DetectResult } from './installer/index.js';

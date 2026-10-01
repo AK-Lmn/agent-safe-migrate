@@ -11,7 +11,7 @@ const program = new Command();
 program
   .name('mgcheck')
   .description('🛡️  Migration Guardian — Catch unsafe database migrations before they hit production')
-  .version('0.1.0');
+  .version('0.1.5');
 
 // ─── mgcheck run ────────────────────────────────────────────────────
 
@@ -168,20 +168,44 @@ program
     await runInteractiveWizard({ yes: options.yes, client: options.client, withRules: options.withRules });
   });
 
+// ─── mgcheck uninstall ─────────────────────────────────────────────
+
+program
+  .command('uninstall')
+  .alias('remove')
+  .description('Safely remove Migration Guardian from AI agents, MCP configs, and Git hooks')
+  .option('-y, --yes', 'Skip confirmation prompt and uninstall automatically', false)
+  .option(
+    '--client <client>',
+    'Target client: antigravity | cursor | claude | claude-code | cline | roo | continue | windsurf | zed | goose | aider | openhands | all',
+    'all'
+  )
+  .action(async (options: any) => {
+    const { runUninstallWizard } = await import('./installer/index.js');
+    await runUninstallWizard({ yes: options.yes, client: options.client });
+  });
+
 // ─── mgcheck hook ───────────────────────────────────────────────────
 
 program
   .command('hook')
-  .description('Install Git pre-commit safety hooks in the current repository')
-  .argument('[action]', 'Action to perform: install | status', 'install')
+  .description('Manage Git pre-commit safety hooks in the current repository')
+  .argument('[action]', 'Action to perform: install | uninstall | status', 'install')
   .action(async (action: string) => {
-    const { installGitHook } = await import('./installer/index.js');
+    const { installGitHook, uninstallGitHook } = await import('./installer/index.js');
     if (action === 'install') {
       const res = installGitHook(process.cwd());
       if (res) {
         console.log(`\n${res}\n`);
       } else {
         console.log('\n  ℹ️  No .git repository found in current directory. Skipped.\n');
+      }
+    } else if (action === 'uninstall' || action === 'remove') {
+      const res = uninstallGitHook(process.cwd());
+      if (res) {
+        console.log(`\n${res}\n`);
+      } else {
+        console.log('\n  ℹ️  No active Migration Guardian Git hook found. Skipped.\n');
       }
     }
   });

@@ -131,6 +131,11 @@ npx mgcheck setup --client zed         # Zed Editor
 npx mgcheck setup --client goose       # Goose (Block)
 npx mgcheck setup --client aider       # Aider CLI
 
+# Uninstall / Cleanly remove from all AI agents and Git hooks
+npx mgcheck uninstall                  # Interactive prompt
+npx mgcheck uninstall -y               # Remove from all agents immediately
+npx mgcheck uninstall --client cline   # Remove from Cline only
+
 # Automated CI Gate (outputs JSON + non-zero exit code on failure)
 npx mgcheck run ./migrations --ci
 ```
@@ -201,6 +206,49 @@ Migration Guardian shields every major AI coding assistant from writing dangerou
   }
 }
 ```
+
+---
+
+## 🗑️ Clean Uninstallation (`mgcheck uninstall`)
+
+When you are done with your migration task or want to cleanly remove Migration Guardian from your system, run:
+
+```bash
+# Interactive uninstallation (prompts for confirmation)
+npx mgcheck uninstall
+
+# Immediate silent uninstallation from all agents
+npx mgcheck uninstall -y
+
+# Target a specific AI agent only
+npx mgcheck uninstall --client cline
+npx mgcheck uninstall --client cursor
+npx mgcheck uninstall --client continue
+
+# Remove just the Git pre-commit hook
+npx mgcheck hook uninstall
+```
+
+### What Uninstallation Does:
+* 🧼 **Surgical MCP Clean**: Safely removes the `"migration-guardian"` key from each agent's global config without touching any of your other tools or preferences.
+* 🪝 **Removes Git Pre-Commit Hook**: Uninstalls `.git/hooks/pre-commit` so standard git commits continue unintercepted.
+* 🧹 **Removes Linters & Microagents**: Cleans `.aider.conf.yml` and removes OpenHands microagent safety rules.
+* 📦 **Zero Remnants**: Leaves your system clean and in its original state.
+
+---
+
+## ⌨️ CLI Commands Reference
+
+| Command | Description |
+| :--- | :--- |
+| `npx mgcheck` / `mgcheck setup` | 1-Click setup wizard: auto-detects all 13 agents, wires MCP configs, and starts live watcher. |
+| `npx mgcheck run <path>` | Analyzes migration and executes it against a disposable shadow DB (`--provider pglite \| docker`). |
+| `npx mgcheck analyze <path>` | Static AST analysis only — checks 10 safety rules with zero database dependency. |
+| `npx mgcheck hook install` | Installs Git pre-commit safety hook to block unsafe migrations before commit. |
+| `npx mgcheck hook uninstall` | Removes the Git pre-commit hook. |
+| `npx mgcheck log` | Views the audit log of intercepted queries (`--tail`, `--risk high`, `--json`). |
+| `npx mgcheck mcp` | Starts the stdio MCP server for direct AI agent integration. |
+| `npx mgcheck uninstall` | Cleanly uninstalls Migration Guardian from all AI agents and Git hooks. |
 
 ---
 

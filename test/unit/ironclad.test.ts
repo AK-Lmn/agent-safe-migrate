@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMcpTools } from '../../src/mcp/tools.js';
-import { installGitHook, setupMcp, detectClients } from '../../src/installer/index.js';
+import { installGitHook, uninstallGitHook, setupMcp, uninstallMcp, detectClients } from '../../src/installer/index.js';
 
 describe('Ironclad Safety Gates', () => {
   let tmpDir: string;
@@ -40,6 +40,19 @@ describe('Ironclad Safety Gates', () => {
       expect(content).toContain('Migration Guardian Git Pre-Commit Safety Hook');
       expect(content).toContain('STAGED_MIGRATIONS');
       expect(content).toContain('npx mgcheck run');
+    });
+
+    it('should uninstall pre-commit hook cleanly when requested', () => {
+      const gitDir = join(tmpDir, '.git');
+      mkdirSync(gitDir, { recursive: true });
+
+      installGitHook(tmpDir);
+      const hookPath = join(gitDir, 'hooks', 'pre-commit');
+      expect(existsSync(hookPath)).toBe(true);
+
+      const res = uninstallGitHook(tmpDir);
+      expect(res).toContain('Removed Git Pre-Commit Hook');
+      expect(existsSync(hookPath)).toBe(false);
     });
   });
 
@@ -144,6 +157,12 @@ describe('Ironclad Safety Gates', () => {
     it('should configure OpenHands when targeted directly', () => {
       const results = setupMcp({ client: 'openhands', workspaceDir: tmpDir });
       expect(results.some((r) => r.includes('OpenHands'))).toBe(true);
+    });
+
+    it('should uninstall MCP config cleanly when targeted directly', () => {
+      setupMcp({ client: 'cline', workspaceDir: tmpDir });
+      const uninstResults = uninstallMcp({ client: 'cline', workspaceDir: tmpDir });
+      expect(uninstResults.some((r) => r.includes('Removed from Cline'))).toBe(true);
     });
   });
 });
