@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import * as readline from 'node:readline/promises';
@@ -7,82 +7,128 @@ import os from 'node:os';
 import chalk from 'chalk';
 
 export interface SetupOptions {
-  client?: 'antigravity' | 'claude' | 'cursor' | 'all';
+  client?: 'antigravity' | 'claude' | 'cursor' | 'windsurf' | 'vscode' | 'all';
   yes?: boolean;
+}
+
+export interface DetectedClient {
+  name: string;
+  detected: boolean;
 }
 
 export interface DetectResult {
   antigravity: boolean;
   cursor: boolean;
   claude: boolean;
+  windsurf: boolean;
+  vscode: boolean;
+  clients: DetectedClient[];
   hasAny: boolean;
 }
 
 /**
- * Dynamically check if a CLI command or binary exists in PATH.
- */
-function isCommandAvailable(cmd: string): boolean {
-  try {
-    const testCmd = process.platform === 'win32' ? `where.exe ${cmd}` : `which ${cmd}`;
-    execSync(testCmd, { stdio: 'ignore', timeout: 1500 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Detect which AI editors/clients are installed on the user's system dynamically.
- * Validates against system executables, PATH binaries, and OS app registries,
- * avoiding false positives from checked-in repository directories.
+ * Detect which AI editors/clients are actually installed on the user's system.
+ *
+ * Uses strict OS-level application checks (installed executables, app bundles)
+ * to avoid false positives from workspace config folders or unrelated CLI tools.
  */
 export function detectClients(): DetectResult {
-  // 1. Antigravity check
-  const geminiDir = join(os.homedir(), '.gemini');
+  const home = os.homedir();
+
+  // ── 1. Google Antigravity ──────────────────────────────────────────
+  const geminiDir = join(home, '.gemini');
   const antigravity = Boolean(
-    process.env.ANTIGRAVITY_APP_DIR ||
-    process.env.ANTIGRAVITY_IDE ||
     existsSync(join(geminiDir, 'antigravity-ide')) ||
-    existsSync(geminiDir)
+    process.env.ANTIGRAVITY_APP_DIR ||
+    process.env.ANTIGRAVITY_IDE
   );
 
-  // 2. Cursor check: dynamically check if cursor binary or app is installed on the OS
-  let cursor = isCommandAvailable('cursor');
-  if (!cursor) {
-    if (process.platform === 'win32') {
-      const localAppData = process.env.LOCALAPPDATA || '';
-      const programFiles = process.env.ProgramFiles || '';
-      cursor = existsSync(join(localAppData, 'Programs', 'cursor', 'Cursor.exe')) ||
-               existsSync(join(programFiles, 'Cursor', 'Cursor.exe'));
-    } else if (process.platform === 'darwin') {
-      cursor = existsSync('/Applications/Cursor.app') ||
-               existsSync(join(os.homedir(), 'Applications', 'Cursor.app'));
-    } else {
-      cursor = existsSync('/opt/Cursor/cursor');
-    }
+  // ── 2. Cursor IDE ─────────────────────────────────────────────────
+  let cursor = false;
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const programFiles = process.env.ProgramFiles || '';
+    cursor = existsSync(join(localAppData, 'Programs', 'cursor', 'Cursor.exe')) ||
+             existsSync(join(programFiles, 'Cursor', 'Cursor.exe'));
+  } else if (process.platform === 'darwin') {
+    cursor = existsSync('/Applications/Cursor.app') ||
+             existsSync(join(home, 'Applications', 'Cursor.app'));
+  } else {
+    cursor = existsSync('/opt/Cursor/cursor') ||
+             existsSync(join(home, '.config', 'Cursor'));
   }
 
-  // 3. Claude Desktop check: check binary in PATH or app on OS
-  let claude = isCommandAvailable('claude');
-  if (!claude) {
-    if (process.platform === 'win32') {
-      const localAppData = process.env.LOCALAPPDATA || '';
-      const appData = process.env.APPDATA || '';
-      claude = existsSync(join(localAppData, 'Programs', 'Claude', 'Claude.exe')) ||
-               existsSync(join(appData, 'Claude', 'Claude.exe'));
-    } else if (process.platform === 'darwin') {
-      claude = existsSync('/Applications/Claude.app') ||
-               existsSync(join(os.homedir(), 'Applications', 'Claude.app'));
-    } else {
-      claude = existsSync(join(os.homedir(), '.config', 'Claude'));
-    }
+  // ── 3. Claude Desktop (GUI app, NOT the Claude Code CLI) ──────────
+  let claude = false;
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    // Claude Desktop installs to AppData\Local\Programs\claude
+    claude = existsSync(join(localAppData, 'Programs', 'claude', 'Claude.exe')) ||
+             existsSync(join(localAppData, 'AnthropicClaude', 'Claude.exe'));
+  } else if (process.platform === 'darwin') {
+    claude = existsSync('/Applications/Claude.app') ||
+             existsSync(join(home, 'Applications', 'Claude.app'));
+  } else {
+    // On Linux, Claude Desktop stores config here when installed
+    const claudeConfig = join(home, '.config', 'Claude', 'claude_desktop_config.json');
+    claude = existsSync(claudeConfig);
   }
+
+  // ── 4. Windsurf (by Codeium) ──────────────────────────────────────
+  let windsurf = false;
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    windsurf = existsSync(join(localAppData, 'Programs', 'windsurf', 'Windsurf.exe')) ||
+               existsSync(join(localAppData, 'Windsurf'));
+  } else if (process.platform === 'darwin') {
+    windsurf = existsSync('/Applications/Windsurf.app') ||
+               existsSync(join(home, 'Applications', 'Windsurf.app'));
+  } else {
+    windsurf = existsSync(join(home, '.config', 'Windsurf'));
+  }
+
+  // ── 5. VS Code + GitHub Copilot ───────────────────────────────────
+  let vscode = false;
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const programFiles = process.env.ProgramFiles || '';
+    const vsCodeInstalled = existsSync(join(localAppData, 'Programs', 'Microsoft VS Code', 'Code.exe')) ||
+                            existsSync(join(programFiles, 'Microsoft VS Code', 'Code.exe'));
+    // Check if Copilot extension is installed
+    const copilotExt = existsSync(join(home, '.vscode', 'extensions')) &&
+      existsSync(join(home, '.vscode', 'extensions'))
+      ? readdirSync(join(home, '.vscode', 'extensions')).some((d) => d.startsWith('github.copilot'))
+      : false;
+    vscode = vsCodeInstalled && copilotExt;
+  } else if (process.platform === 'darwin') {
+    const vsCodeInstalled = existsSync('/Applications/Visual Studio Code.app');
+    const copilotExt = existsSync(join(home, '.vscode', 'extensions')) &&
+      readdirSync(join(home, '.vscode', 'extensions')).some((d) => d.startsWith('github.copilot'));
+    vscode = vsCodeInstalled && copilotExt;
+  } else {
+    const vsCodeInstalled = existsSync(join(home, '.config', 'Code'));
+    const copilotExt = existsSync(join(home, '.vscode', 'extensions')) &&
+      readdirSync(join(home, '.vscode', 'extensions')).some((d) => d.startsWith('github.copilot'));
+    vscode = vsCodeInstalled && copilotExt;
+  }
+
+  // ── Build client list ─────────────────────────────────────────────
+  const clients: DetectedClient[] = [
+    { name: 'Google Antigravity', detected: antigravity },
+    { name: 'Cursor IDE', detected: cursor },
+    { name: 'Claude Desktop', detected: claude },
+    { name: 'Windsurf (Codeium)', detected: windsurf },
+    { name: 'VS Code + Copilot', detected: vscode },
+  ];
 
   return {
     antigravity,
     cursor,
     claude,
-    hasAny: antigravity || cursor || claude,
+    windsurf,
+    vscode,
+    clients,
+    hasAny: clients.some((c) => c.detected),
   };
 }
 
@@ -396,11 +442,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   console.log(chalk.dim('  Catch unsafe database migrations before they hit production.\n'));
 
   const detected = detectClients();
-  const detectedList: string[] = [];
-
-  if (detected.antigravity) detectedList.push('Google Antigravity');
-  if (detected.cursor) detectedList.push('Cursor IDE');
-  if (detected.claude) detectedList.push('Claude Desktop');
+  const detectedList = detected.clients.filter((c) => c.detected).map((c) => c.name);
 
   if (detectedList.length > 0) {
     console.log(chalk.bold('  Detected AI Clients on your system:'));
@@ -409,7 +451,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     }
     console.log('');
   } else {
-    console.log(chalk.dim('  Configuring MCP integration for your AI editors (Antigravity, Cursor, Claude)...\n'));
+    console.log(chalk.dim('  No AI editors detected. Configuring MCP integration anyway...\n'));
   }
 
   // Check if --yes was passed to bypass the prompt
