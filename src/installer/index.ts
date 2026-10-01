@@ -506,8 +506,8 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   console.log(chalk.dim('  • 🔴 HIGH risk queries   → Auto-blocked (AI receives error)'));
   console.log(chalk.dim('  • 🟡 MEDIUM risk queries → You will be asked to approve/reject'));
   console.log(chalk.dim('  • 🟢 LOW risk queries    → You will be asked to approve/reject\n'));
-  console.log(chalk.dim('  Audit Log: ~/.mgcheck/audit.jsonl'));
-  console.log(chalk.dim('  View log anytime: mgcheck log\n'));
+  console.log(chalk.white('  Audit Log: ~/.mgcheck/audit.jsonl'));
+  console.log(chalk.white('  View log anytime: mgcheck log\n'));
 
   // ── Enter Watch Mode ──────────────────────────────────────────────
   console.log(chalk.bold.cyan('  👁️  Guardian Active — Watching for AI migration activity...'));
