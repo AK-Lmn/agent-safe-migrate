@@ -2,7 +2,11 @@
   "mcpServers": {
     "migration-guardian": {
       "command": "npx",
-      "args": ["-y", "mgcheck", "mcp"]
+      "args": [
+        "-y",
+        "mgcheck",
+        "mcp"
+      ]
     }
   }
 }

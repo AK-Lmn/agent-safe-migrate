@@ -460,27 +460,69 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
 
   console.log(chalk.bold.green('\n  🎉 Migration Guardian is ready!'));
   console.log(chalk.white('  Your AI assistant will now automatically check migrations before executing.\n'));
-  console.log(chalk.dim('  Tools available to your AI:'));
-  console.log(chalk.dim('  • check_migration  — shadow database execution + 10 AST safety rules'));
-  console.log(chalk.dim('  • analyze_migration — fast static SQL linting\n'));
-  console.log(chalk.dim('  Manual CLI Commands:'));
-  console.log(chalk.dim('  • mgcheck run <path>      — analyze + shadow DB execution'));
-  console.log(chalk.dim('  • mgcheck analyze <path>  — static analysis only\n'));
+  console.log(chalk.dim('  Behavior:'));
+  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Auto-blocked (AI receives error)'));
+  console.log(chalk.dim('  • 🟡 MEDIUM risk queries → You will be asked to approve/reject'));
+  console.log(chalk.dim('  • 🟢 LOW risk queries    → You will be asked to approve/reject\n'));
+  console.log(chalk.dim('  Audit Log: ~/.mgcheck/audit.jsonl'));
+  console.log(chalk.dim('  View log anytime: mgcheck log\n'));
 
   // ── Enter Watch Mode ──────────────────────────────────────────────
-  console.log(chalk.bold.cyan('  👁️  Watch Mode — Listening for AI migration activity...'));
+  console.log(chalk.bold.cyan('  👁️  Guardian Active — Watching for AI migration activity...'));
   console.log(chalk.dim('  Press Ctrl+C to stop.\n'));
   console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
   console.log('');
 
-  const { watchActivityLog, formatActivityEntry, clearActivityLog } = await import('../core/activity-log.js');
+  const {
+    watchPendingApprovals,
+    formatAuditEntry,
+    writeDecision,
+    removePendingApproval,
+    clearActivityLog,
+    AUDIT_FILE,
+  } = await import('../core/activity-log.js');
+  const rl = readline.createInterface({ input, output });
 
-  // Clear old log entries so they don't replay on startup (ensures directory exists)
+  // Clear old log entries so they don't replay on startup
   clearActivityLog();
 
-  const stopWatching = watchActivityLog((entry) => {
-    console.log(formatActivityEntry(entry));
+  const stopWatching = watchPendingApprovals(async (entry) => {
     console.log('');
+    console.log(formatAuditEntry(entry));
+    console.log('');
+
+    // Prompt user for approval
+    const riskColors: Record<string, (s: string) => string> = {
+      high: chalk.red,
+      medium: chalk.yellow,
+      low: chalk.green,
+    };
+    const color = riskColors[entry.risk] || chalk.white;
+
+    try {
+      const answer = await rl.question(
+        color(`  ➜ Allow this ${entry.risk.toUpperCase()} risk migration? `) +
+        chalk.dim('[y/N] ')
+      );
+      const trimmed = answer.trim().toLowerCase();
+      const approved = trimmed === 'y' || trimmed === 'yes';
+
+      writeDecision(entry.id, approved);
+      removePendingApproval(entry.id);
+
+      if (approved) {
+        console.log(chalk.green('  ✅ Approved — AI agent may proceed.\n'));
+      } else {
+        console.log(chalk.red('  ❌ Rejected — AI agent received error.\n'));
+      }
+
+      console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
+      console.log('');
+    } catch {
+      // readline was closed (e.g. Ctrl+C during prompt)
+      writeDecision(entry.id, false);
+      removePendingApproval(entry.id);
+    }
   });
 
   // Keep the process alive with an active interval timer
@@ -490,6 +532,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   process.on('SIGINT', () => {
     clearInterval(keepAlive);
     stopWatching();
+    rl.close();
     console.log(chalk.dim('\n  Migration Guardian stopped. Goodbye! 👋\n'));
     process.exit(0);
   });

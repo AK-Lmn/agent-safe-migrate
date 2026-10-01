@@ -181,6 +181,80 @@ program
     }
   });
 
+// ─── mgcheck log ────────────────────────────────────────────────────
+
+program
+  .command('log')
+  .description('View the audit log of all migration queries intercepted by Migration Guardian')
+  .option('--all', 'Show all entries (default: last 20)', false)
+  .option('--risk <level>', 'Filter by risk level: high | medium | low')
+  .option('--tail', 'Live tail mode — watch for new entries', false)
+  .option('--json', 'Output raw JSON lines', false)
+  .action(async (options: any) => {
+    try {
+      const {
+        readAuditLog,
+        formatAuditEntry,
+        AUDIT_FILE,
+      } = await import('./core/activity-log.js');
+      const chalk = (await import('chalk')).default;
+
+      let entries = readAuditLog();
+
+      if (entries.length === 0) {
+        console.log(chalk.dim('\n  No audit entries found yet.'));
+        console.log(chalk.dim(`  Audit log location: ${AUDIT_FILE}`));
+        console.log(chalk.dim('  Run `mgcheck setup` to start the guardian.\n'));
+        return;
+      }
+
+      // Filter by risk level
+      if (options.risk) {
+        entries = entries.filter((e) => e.risk === options.risk);
+      }
+
+      // Limit to last 20 unless --all
+      if (!options.all) {
+        entries = entries.slice(-20);
+      }
+
+      if (options.json) {
+        for (const entry of entries) {
+          console.log(JSON.stringify(entry));
+        }
+        return;
+      }
+
+      // Pretty print
+      console.log('');
+      console.log(chalk.bold.cyan('  📋 Migration Guardian Audit Log'));
+      console.log(chalk.dim(`  File: ${AUDIT_FILE}`));
+      console.log(chalk.dim(`  Showing ${entries.length} entries\n`));
+      console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
+
+      for (const entry of entries) {
+        console.log('');
+        console.log(formatAuditEntry(entry));
+      }
+      console.log('');
+      console.log(chalk.dim('  ─────────────────────────────────────────────────────────\n'));
+
+      // Summary stats
+      const blocked = entries.filter((e) => e.decision === 'blocked').length;
+      const approved = entries.filter((e) => e.decision === 'user_approved').length;
+      const rejected = entries.filter((e) => e.decision === 'user_rejected').length;
+      console.log(chalk.dim('  Summary: ') +
+        chalk.red(`${blocked} blocked`) + chalk.dim(' | ') +
+        chalk.green(`${approved} approved`) + chalk.dim(' | ') +
+        chalk.yellow(`${rejected} rejected`)
+      );
+      console.log('');
+    } catch (err) {
+      console.error(`\n  ❌ Error reading audit log: ${(err as Error).message}\n`);
+      process.exitCode = 3;
+    }
+  });
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function buildConfig(options: any): MgcheckConfig {
