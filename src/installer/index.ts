@@ -1,8 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
-import * as readline from 'node:readline/promises';
-import { stdin as input, stdout as output } from 'node:process';
 import os from 'node:os';
 import chalk from 'chalk';
 
@@ -559,17 +557,60 @@ export function setupMcp(options: SetupOptions = {}): string[] {
     results.push(chalk.green('  ✅ Safety Rules Centralized') + chalk.dim(` (${rulesPath})`));
   } catch { /* skip */ }
 
-  // 14. Only inject workspace rule files if explicitly requested via options.withRules
+  // 14. Project Local Storage & GitIgnore Setup (.mgcheck/ in project workspace)
+  try {
+    const projectMgcheck = join(workspaceDir, '.mgcheck');
+    if (!existsSync(projectMgcheck)) {
+      mkdirSync(projectMgcheck, { recursive: true });
+    }
+  } catch { /* skip */ }
+
+  const gitIgnoreRes = ensureGitIgnore(workspaceDir);
+  if (gitIgnoreRes?.updated) {
+    results.push(chalk.green('  ✅ Added .mgcheck/ to .gitignore') + chalk.dim(` (${gitIgnoreRes.file})`));
+  }
+
+  // 15. Only inject workspace rule files if explicitly requested via options.withRules
   if (options.withRules) {
     const ruleResults = injectAgentRules(workspaceDir);
     results.push(...ruleResults);
   }
 
-  // 15. Install Git Pre-Commit Safety Hook if in a git repository
-  const hookResult = installGitHook(workspaceDir);
-  if (hookResult) results.push(hookResult);
-
   return results;
+}
+
+/**
+ * Ensures that .mgcheck/ is ignored by Git in the project workspace.
+ * Adds .mgcheck/ to .gitignore if not already present.
+ */
+export function ensureGitIgnore(workspaceDir: string = process.cwd()): { updated: boolean; file: string } | null {
+  try {
+    const gitignorePath = join(workspaceDir, '.gitignore');
+    const entryToIgnore = '.mgcheck/';
+
+    if (existsSync(gitignorePath)) {
+      const content = readFileSync(gitignorePath, 'utf-8');
+      const lines = content.split('\n').map((l) => l.trim());
+      const alreadyIgnored = lines.some((l) => l === '.mgcheck' || l === '.mgcheck/' || l === '/.mgcheck' || l === '/.mgcheck/');
+      if (!alreadyIgnored) {
+        const comment = '# Migration Guardian audit logs & temporary approvals';
+        const separator = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+        writeFileSync(gitignorePath, `${content}${separator}\n${comment}\n${entryToIgnore}\n`, 'utf-8');
+        return { updated: true, file: gitignorePath };
+      }
+      return { updated: false, file: gitignorePath };
+    } else {
+      // Create .gitignore if project has .git or package.json
+      if (existsSync(join(workspaceDir, '.git')) || existsSync(join(workspaceDir, 'package.json'))) {
+        const comment = '# Migration Guardian audit logs & temporary approvals';
+        writeFileSync(gitignorePath, `${comment}\n${entryToIgnore}\n`, 'utf-8');
+        return { updated: true, file: gitignorePath };
+      }
+      return null;
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -878,152 +919,6 @@ export function verifyConnections(): string[] {
   return lines;
 }
 
-/**
- * Interactive Wizard: Auto-detects clients, prompts the user, and connects.
- */
-export async function runInteractiveWizard(options: SetupOptions = {}) {
-  console.log('');
-  console.log(chalk.bold.cyan('  🛡️  Migration Guardian') + chalk.dim(' (mgcheck) — Database Migration Safety'));
-  console.log(chalk.dim('  Catch unsafe database migrations before they hit production.\n'));
-
-  const detected = detectClients();
-  const detectedList = detected.clients.filter((c) => c.detected).map((c) => c.name);
-
-  if (detectedList.length > 0) {
-    console.log(chalk.bold('  Detected AI Clients on your system:'));
-    for (const client of detectedList) {
-      console.log(`  ${chalk.cyan('•')} ${chalk.white(client)}`);
-    }
-    console.log('');
-  } else {
-    console.log(chalk.dim('  No AI editors detected. Configuring MCP integration anyway...\n'));
-  }
-
-  // Check if --yes was passed to bypass the prompt
-  let shouldProceed = options.yes ?? false;
-
-  if (!shouldProceed) {
-    const promptText = detectedList.length > 0
-      ? `  Connect Migration Guardian to ${detectedList.join(' & ')}? ${chalk.dim('[Y/n]')} `
-      : `  Connect Migration Guardian to your AI agents? ${chalk.dim('[Y/n]')} `;
-
-    const rl = readline.createInterface({ input, output });
-
-    try {
-      const answer = await rl.question(promptText);
-      const trimmed = answer.trim().toLowerCase();
-      shouldProceed = trimmed === '' || trimmed === 'y' || trimmed === 'yes';
-    } finally {
-      rl.close();
-    }
-  }
-
-  if (!shouldProceed) {
-    console.log(chalk.dim('\n  Setup skipped.'));
-    console.log(chalk.white('  You can connect anytime by running: ') + chalk.cyan('npx mgcheck setup'));
-    console.log(chalk.white('  Or run checks manually with: ') + chalk.cyan('npx mgcheck run <migration.sql>\n'));
-    return;
-  }
-
-  console.log(chalk.dim('\n  Configuring MCP integrations...\n'));
-  const results = setupMcp(options);
-
-  for (const res of results) {
-    console.log(res);
-  }
-
-  // ── Connection Verification ──────────────────────────────────────
-  console.log('');
-  console.log(chalk.bold('  🔗 Connection Status'));
-
-  const verified = verifyConnections();
-  if (verified.length === 0) {
-    console.log(chalk.yellow('  ⚠  No active connections found. Run ') + chalk.cyan('mgcheck setup') + chalk.yellow(' to retry.'));
-  } else {
-    for (const v of verified) {
-      console.log(v);
-    }
-  }
-
-  console.log(chalk.bold.green('\n  🎉 Migration Guardian is ready!'));
-  console.log(chalk.white('  Your AI assistant will now automatically check migrations before executing.\n'));
-  console.log(chalk.dim('  Behavior:'));
-  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Auto-blocked (AI receives error)'));
-  console.log(chalk.dim('  • 🟡 MEDIUM risk queries → You will be asked to approve/reject'));
-  console.log(chalk.dim('  • 🟢 LOW risk queries    → You will be asked to approve/reject\n'));
-  console.log(chalk.white('  Audit Log: ~/.mgcheck/audit.jsonl'));
-  console.log(chalk.white('  View log anytime: mgcheck log\n'));
-
-  // ── Enter Watch Mode ──────────────────────────────────────────────
-  console.log(chalk.bold.cyan('  👁️  Guardian Active — Watching for AI migration activity...'));
-  console.log(chalk.dim('  Press Ctrl+C to stop.\n'));
-  console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
-  console.log('');
-
-  const {
-    watchPendingApprovals,
-    formatAuditEntry,
-    writeDecision,
-    removePendingApproval,
-    clearActivityLog,
-    AUDIT_FILE,
-  } = await import('../core/activity-log.js');
-  const rl = readline.createInterface({ input, output });
-
-  // Clear old log entries so they don't replay on startup
-  clearActivityLog();
-
-  const stopWatching = watchPendingApprovals(async (entry) => {
-    console.log('');
-    console.log(formatAuditEntry(entry));
-    console.log('');
-
-    // Prompt user for approval
-    const riskColors: Record<string, (s: string) => string> = {
-      high: chalk.red,
-      medium: chalk.yellow,
-      low: chalk.green,
-    };
-    const color = riskColors[entry.risk] || chalk.white;
-
-    try {
-      const answer = await rl.question(
-        color(`  ➜ Allow this ${entry.risk.toUpperCase()} risk migration? `) +
-        chalk.dim('[y/N] ')
-      );
-      const trimmed = answer.trim().toLowerCase();
-      const approved = trimmed === 'y' || trimmed === 'yes';
-
-      writeDecision(entry.id, approved);
-      removePendingApproval(entry.id);
-
-      if (approved) {
-        console.log(chalk.green('  ✅ Approved — AI agent may proceed.\n'));
-      } else {
-        console.log(chalk.red('  ❌ Rejected — AI agent received error.\n'));
-      }
-
-      console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
-      console.log('');
-    } catch {
-      // readline was closed (e.g. Ctrl+C during prompt)
-      writeDecision(entry.id, false);
-      removePendingApproval(entry.id);
-    }
-  });
-
-  // Keep the process alive with an active interval timer
-  const keepAlive = setInterval(() => {}, 1000 * 60 * 60);
-
-  // Handle graceful shutdown on Ctrl+C
-  process.on('SIGINT', () => {
-    clearInterval(keepAlive);
-    stopWatching();
-    rl.close();
-    console.log(chalk.dim('\n  Migration Guardian stopped. Goodbye! 👋\n'));
-    process.exit(0);
-  });
-}
 
 /**
  * Remove Migration Guardian MCP configuration and hooks from specified clients.
@@ -1199,44 +1094,5 @@ export function uninstallMcp(options: SetupOptions = {}): string[] {
   return results;
 }
 
-/**
- * Interactive Wizard: Uninstalls Migration Guardian from AI clients and hooks.
- */
-export async function runUninstallWizard(options: SetupOptions = {}) {
-  console.log('');
-  console.log(chalk.bold.cyan('  🛡️  Migration Guardian') + chalk.dim(' (mgcheck) — Uninstall'));
-  console.log(chalk.dim('  Safely remove Migration Guardian from AI agents and Git hooks.\n'));
-
-  let shouldProceed = options.yes ?? false;
-
-  if (!shouldProceed) {
-    const promptText = `  Remove Migration Guardian MCP integrations and Git hooks? ${chalk.dim('[Y/n]')} `;
-    const rl = readline.createInterface({ input, output });
-
-    try {
-      const answer = await rl.question(promptText);
-      const trimmed = answer.trim().toLowerCase();
-      shouldProceed = trimmed === '' || trimmed === 'y' || trimmed === 'yes';
-    } finally {
-      rl.close();
-    }
-  }
-
-  if (!shouldProceed) {
-    console.log(chalk.dim('\n  Uninstall cancelled.\n'));
-    return;
-  }
-
-  console.log(chalk.dim('\n  Removing integrations...\n'));
-  const results = uninstallMcp(options);
-
-  if (results.length === 0) {
-    console.log(chalk.dim('  No active Migration Guardian configurations were found to remove.\n'));
-  } else {
-    for (const res of results) {
-      console.log(res);
-    }
-    console.log(chalk.bold.green('\n  ✨ Migration Guardian has been cleanly uninstalled.\n'));
-  }
-}
+export { runInteractiveWizard, runUninstallWizard } from './terminal.js';
 

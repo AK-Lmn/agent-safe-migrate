@@ -49,5 +49,18 @@ export {
   installGitHook,
   uninstallGitHook,
   injectAgentRules,
+  ensureGitIgnore,
 } from './installer/index.js';
 export type { SetupOptions, DetectedClient, DetectResult } from './installer/index.js';
+
+// Activity & Audit Log
+export {
+  writeAuditEntry,
+  readAuditLog,
+  getLogDir,
+  getAuditFile,
+  getGlobalAuditFile,
+  findProjectRoot,
+  setLogDir,
+} from './core/activity-log.js';
+export type { AuditEntry, ActivityEntry } from './core/activity-log.js';

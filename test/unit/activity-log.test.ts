@@ -1,0 +1,173 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import {
+  findProjectRoot,
+  getLogDir,
+  setLogDir,
+  getAuditFile,
+  writeAuditEntry,
+  readAuditLog,
+  type AuditEntry,
+} from '../../src/core/activity-log.js';
+import { ensureGitIgnore, setupMcp } from '../../src/installer/index.js';
+
+describe('Per-Project Audit Log & Storage Resolution', () => {
+  let tmpProjectDir: string;
+
+  beforeEach(() => {
+    tmpProjectDir = mkdtempSync(join(tmpdir(), 'mgcheck-project-test-'));
+    setLogDir(null);
+    delete process.env.MGCHECK_STORAGE_DIR;
+  });
+
+  afterEach(() => {
+    setLogDir(null);
+    delete process.env.MGCHECK_STORAGE_DIR;
+    try {
+      rmSync(tmpProjectDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  describe('findProjectRoot', () => {
+    it('should identify root containing package.json', () => {
+      writeFileSync(join(tmpProjectDir, 'package.json'), '{}', 'utf-8');
+      const found = findProjectRoot(tmpProjectDir);
+      expect(found).toBe(tmpProjectDir);
+    });
+
+    it('should identify root containing .git directory', () => {
+      mkdirSync(join(tmpProjectDir, '.git'), { recursive: true });
+      const found = findProjectRoot(tmpProjectDir);
+      expect(found).toBe(tmpProjectDir);
+    });
+
+    it('should identify root containing .mgcheck directory', () => {
+      mkdirSync(join(tmpProjectDir, '.mgcheck'), { recursive: true });
+      const found = findProjectRoot(tmpProjectDir);
+      expect(found).toBe(tmpProjectDir);
+    });
+
+    it('should find root from deep subdirectories', () => {
+      writeFileSync(join(tmpProjectDir, 'package.json'), '{}', 'utf-8');
+      const subDir = join(tmpProjectDir, 'src', 'db', 'migrations');
+      mkdirSync(subDir, { recursive: true });
+
+      const found = findProjectRoot(subDir);
+      expect(found).toBe(tmpProjectDir);
+    });
+  });
+
+  describe('getLogDir and getAuditFile', () => {
+    it('should prioritize explicit setLogDir override', () => {
+      const customPath = join(tmpProjectDir, 'custom-log');
+      setLogDir(customPath);
+      expect(getLogDir()).toBe(customPath);
+      expect(getAuditFile()).toBe(join(customPath, 'audit.jsonl'));
+    });
+
+    it('should prioritize MGCHECK_STORAGE_DIR env variable', () => {
+      const envPath = join(tmpProjectDir, 'env-storage');
+      process.env.MGCHECK_STORAGE_DIR = envPath;
+      expect(getLogDir()).toBe(envPath);
+      expect(getAuditFile()).toBe(join(envPath, 'audit.jsonl'));
+    });
+
+    it('should resolve to projectRoot/.mgcheck when in a project folder', () => {
+      writeFileSync(join(tmpProjectDir, 'package.json'), '{}', 'utf-8');
+      const expected = join(tmpProjectDir, '.mgcheck');
+      expect(getLogDir(tmpProjectDir)).toBe(expected);
+      expect(getAuditFile(tmpProjectDir)).toBe(join(expected, 'audit.jsonl'));
+    });
+  });
+
+  describe('writeAuditEntry and readAuditLog in project folder', () => {
+    it('should write and read audit entries from project-local .mgcheck folder', () => {
+      writeFileSync(join(tmpProjectDir, 'package.json'), '{}', 'utf-8');
+      setLogDir(join(tmpProjectDir, '.mgcheck'));
+
+      const testEntry: AuditEntry = {
+        id: 'test-123',
+        timestamp: new Date().toISOString(),
+        tool: 'check_migration',
+        risk: 'high',
+        decision: 'blocked',
+        query: 'DROP TABLE users;',
+        violations: [
+          {
+            ruleId: 'MG006',
+            severity: 'error',
+            message: 'DROP TABLE is destructive',
+          },
+        ],
+        errorCount: 1,
+        warningCount: 0,
+      };
+
+      writeAuditEntry(testEntry);
+
+      const auditFilePath = join(tmpProjectDir, '.mgcheck', 'audit.jsonl');
+      expect(existsSync(auditFilePath)).toBe(true);
+
+      const entries = readAuditLog();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].id).toBe('test-123');
+      expect(entries[0].query).toBe('DROP TABLE users;');
+      expect(entries[0].risk).toBe('high');
+      expect(entries[0].decision).toBe('blocked');
+    });
+  });
+
+  describe('ensureGitIgnore', () => {
+    it('should create .gitignore with .mgcheck/ when package.json exists', () => {
+      writeFileSync(join(tmpProjectDir, 'package.json'), '{}', 'utf-8');
+      const res = ensureGitIgnore(tmpProjectDir);
+      expect(res).not.toBeNull();
+      expect(res?.updated).toBe(true);
+
+      const gitignore = readFileSync(join(tmpProjectDir, '.gitignore'), 'utf-8');
+      expect(gitignore).toContain('.mgcheck/');
+    });
+
+    it('should append .mgcheck/ to existing .gitignore', () => {
+      const gitignorePath = join(tmpProjectDir, '.gitignore');
+      writeFileSync(gitignorePath, 'node_modules/\ndist/\n', 'utf-8');
+
+      const res = ensureGitIgnore(tmpProjectDir);
+      expect(res?.updated).toBe(true);
+
+      const updated = readFileSync(gitignorePath, 'utf-8');
+      expect(updated).toContain('node_modules/');
+      expect(updated).toContain('dist/');
+      expect(updated).toContain('.mgcheck/');
+    });
+
+    it('should not duplicate .mgcheck/ if already present in .gitignore', () => {
+      const gitignorePath = join(tmpProjectDir, '.gitignore');
+      writeFileSync(gitignorePath, 'node_modules/\n.mgcheck/\n', 'utf-8');
+
+      const res = ensureGitIgnore(tmpProjectDir);
+      expect(res?.updated).toBe(false);
+
+      const content = readFileSync(gitignorePath, 'utf-8');
+      const matches = content.match(/\.mgcheck\//g);
+      expect(matches).toHaveLength(1);
+    });
+  });
+
+  describe('setupMcp project initialization', () => {
+    it('should create .mgcheck directory and update .gitignore during setup', () => {
+      writeFileSync(join(tmpProjectDir, 'package.json'), '{}', 'utf-8');
+      const results = setupMcp({ client: 'cursor', workspaceDir: tmpProjectDir });
+
+      expect(existsSync(join(tmpProjectDir, '.mgcheck'))).toBe(true);
+      expect(existsSync(join(tmpProjectDir, '.gitignore'))).toBe(true);
+
+      const gitignore = readFileSync(join(tmpProjectDir, '.gitignore'), 'utf-8');
+      expect(gitignore).toContain('.mgcheck/');
+
+      expect(results.some((r) => r.includes('.mgcheck/ to .gitignore'))).toBe(true);
+    });
+  });
+});

@@ -214,25 +214,32 @@ program
 
 program
   .command('log')
+  .alias('audit')
   .description('View the audit log of all migration queries intercepted by Migration Guardian')
   .option('--all', 'Show all entries (default: last 20)', false)
   .option('--risk <level>', 'Filter by risk level: high | medium | low')
   .option('--tail', 'Live tail mode — watch for new entries', false)
   .option('--json', 'Output raw JSON lines', false)
+  .option('--global', 'View global audit log (~/.mgcheck/audit.jsonl) instead of project audit log', false)
   .action(async (options: any) => {
     try {
       const {
         readAuditLog,
         formatAuditEntry,
-        AUDIT_FILE,
+        getAuditFile,
+        getGlobalAuditFile,
       } = await import('./core/activity-log.js');
       const chalk = (await import('chalk')).default;
 
-      let entries = readAuditLog();
+      const auditFile = options.global ? getGlobalAuditFile() : getAuditFile();
+      let entries = readAuditLog({ global: options.global });
 
       if (entries.length === 0) {
         console.log(chalk.dim('\n  No audit entries found yet.'));
-        console.log(chalk.dim(`  Audit log location: ${AUDIT_FILE}`));
+        console.log(chalk.dim(`  Audit log location: ${auditFile}`));
+        if (!options.global) {
+          console.log(chalk.dim('  (Run `mgcheck log --global` to check machine-wide global logs)'));
+        }
         console.log(chalk.dim('  Run `mgcheck setup` to start the guardian.\n'));
         return;
       }
@@ -257,7 +264,7 @@ program
       // Pretty print
       console.log('');
       console.log(chalk.bold.cyan('  📋 Migration Guardian Audit Log'));
-      console.log(chalk.dim(`  File: ${AUDIT_FILE}`));
+      console.log(chalk.dim(`  File: ${auditFile}`));
       console.log(chalk.dim(`  Showing ${entries.length} entries\n`));
       console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
 

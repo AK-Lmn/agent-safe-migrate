@@ -1,6 +1,14 @@
 // ─── Migration Detection ─────────────────────────────────────────────
 
-export type MigrationFormat = 'raw-sql' | 'prisma' | 'drizzle';
+export type MigrationFormat =
+  | 'raw-sql'
+  | 'prisma'
+  | 'drizzle'
+  | 'supabase'
+  | 'flyway'
+  | 'goose'
+  | 'golang-migrate'
+  | 'dbmate';
 
 export interface MigrationFile {
   /** Absolute or relative path to the file */

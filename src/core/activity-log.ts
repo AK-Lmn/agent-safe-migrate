@@ -1,14 +1,123 @@
-import { existsSync, mkdirSync, appendFileSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, appendFileSync, writeFileSync, readFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve, dirname, parse } from 'node:path';
 import os from 'node:os';
 import chalk from 'chalk';
 import type { RiskLevel } from './risk-classifier.js';
 
-const LOG_DIR = join(os.homedir(), '.mgcheck');
-const LOG_FILE = join(LOG_DIR, 'activity.log');
-const AUDIT_FILE = join(LOG_DIR, 'audit.jsonl');
-const PENDING_DIR = join(LOG_DIR, 'pending');
-const DECISIONS_DIR = join(LOG_DIR, 'decisions');
+// ── Project Root & Storage Directory Resolution ───────────────────
+
+/**
+ * Custom override for the storage directory.
+ * Set via setLogDir() or MGCHECK_STORAGE_DIR environment variable.
+ */
+let customLogDir: string | null = null;
+
+export function setLogDir(dir: string | null): void {
+  customLogDir = dir;
+}
+
+/**
+ * Searches upward from startDir for a project root indicator:
+ * 1. .mgcheck/ directory (already initialized)
+ * 2. mgcheck.config.json, .mgcheckrc.json, .mgcheckrc.yml, .mgcheckrc
+ * 3. package.json or .git directory
+ */
+export function findProjectRoot(startDir: string = process.cwd()): string | null {
+  try {
+    let current = resolve(startDir);
+    const { root } = parse(current);
+
+    while (true) {
+      // 1. Existing .mgcheck directory
+      if (existsSync(join(current, '.mgcheck'))) {
+        return current;
+      }
+      // 2. Config files
+      if (
+        existsSync(join(current, 'mgcheck.config.json')) ||
+        existsSync(join(current, '.mgcheckrc.json')) ||
+        existsSync(join(current, '.mgcheckrc.yml')) ||
+        existsSync(join(current, '.mgcheckrc'))
+      ) {
+        return current;
+      }
+      // 3. package.json or .git
+      if (existsSync(join(current, 'package.json')) || existsSync(join(current, '.git'))) {
+        return current;
+      }
+
+      if (current === root) {
+        break;
+      }
+      const parent = dirname(current);
+      if (parent === current) {
+        break;
+      }
+      current = parent;
+    }
+  } catch {
+    // If permission or path error, return null
+  }
+  return null;
+}
+
+/**
+ * Resolves the active storage directory for logs, audit files, and IPC queues.
+ * Priority:
+ * 1. Explicit in-memory override via setLogDir(...)
+ * 2. MGCHECK_STORAGE_DIR env variable
+ * 3. Nearest project root containing package.json, .git, or .mgcheck
+ * 4. Fallback to ~/.mgcheck
+ */
+export function getLogDir(startDir?: string): string {
+  if (customLogDir) {
+    return customLogDir;
+  }
+  if (process.env.MGCHECK_STORAGE_DIR) {
+    return resolve(process.env.MGCHECK_STORAGE_DIR);
+  }
+
+  const projectRoot = findProjectRoot(startDir || process.cwd());
+  if (projectRoot) {
+    return join(projectRoot, '.mgcheck');
+  }
+
+  return join(os.homedir(), '.mgcheck');
+}
+
+/**
+ * Returns the global user directory (~/.mgcheck).
+ */
+export function getGlobalLogDir(): string {
+  return join(os.homedir(), '.mgcheck');
+}
+
+export function getAuditFile(startDir?: string): string {
+  return join(getLogDir(startDir), 'audit.jsonl');
+}
+
+export function getGlobalAuditFile(): string {
+  return join(getGlobalLogDir(), 'audit.jsonl');
+}
+
+export function getLogFile(startDir?: string): string {
+  return join(getLogDir(startDir), 'activity.log');
+}
+
+export function getPendingDir(startDir?: string): string {
+  return join(getLogDir(startDir), 'pending');
+}
+
+export function getDecisionsDir(startDir?: string): string {
+  return join(getLogDir(startDir), 'decisions');
+}
+
+// Kept for backward compatibility
+export const LOG_DIR = getLogDir();
+export const LOG_FILE = getLogFile();
+export const AUDIT_FILE = getAuditFile();
+export const PENDING_DIR = getPendingDir();
+export const DECISIONS_DIR = getDecisionsDir();
 
 // ── Audit Entry ────────────────────────────────────────────────────
 
@@ -53,8 +162,10 @@ export interface ActivityEntry {
 
 // ── Directory Setup ─────────────────────────────────────────────────
 
-function ensureDirs(): void {
-  for (const dir of [LOG_DIR, PENDING_DIR, DECISIONS_DIR]) {
+function ensureDirs(targetDir: string = getLogDir()): void {
+  const pDir = join(targetDir, 'pending');
+  const dDir = join(targetDir, 'decisions');
+  for (const dir of [targetDir, pDir, dDir]) {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
@@ -64,20 +175,24 @@ function ensureDirs(): void {
 // ── Audit Log Functions ────────────────────────────────────────────
 
 /**
- * Append an audit entry to ~/.mgcheck/audit.jsonl
+ * Append an audit entry to the active audit log file (project .mgcheck/audit.jsonl).
  */
-export function writeAuditEntry(entry: AuditEntry): void {
-  ensureDirs();
+export function writeAuditEntry(entry: AuditEntry, targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
+  const auditFile = join(baseDir, 'audit.jsonl');
   const line = JSON.stringify(entry) + '\n';
-  appendFileSync(AUDIT_FILE, line, 'utf-8');
+  appendFileSync(auditFile, line, 'utf-8');
 }
 
 /**
  * Read all audit entries from the log file.
+ * Supports reading the active project log or global log (~/.mgcheck/audit.jsonl).
  */
-export function readAuditLog(): AuditEntry[] {
-  if (!existsSync(AUDIT_FILE)) return [];
-  const content = readFileSync(AUDIT_FILE, 'utf-8');
+export function readAuditLog(options?: { global?: boolean; path?: string }): AuditEntry[] {
+  const file = options?.path || (options?.global ? getGlobalAuditFile() : getAuditFile());
+  if (!existsSync(file)) return [];
+  const content = readFileSync(file, 'utf-8');
   return content
     .split('\n')
     .filter((l) => l.trim())
@@ -93,21 +208,24 @@ export function readAuditLog(): AuditEntry[] {
 /**
  * Write a pending approval request that the watch terminal will pick up.
  */
-export function writePendingApproval(entry: AuditEntry): void {
-  ensureDirs();
-  const filePath = join(PENDING_DIR, `${entry.id}.json`);
+export function writePendingApproval(entry: AuditEntry, targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
+  const filePath = join(baseDir, 'pending', `${entry.id}.json`);
   writeFileSync(filePath, JSON.stringify(entry, null, 2), 'utf-8');
 }
 
 /**
  * Read all pending approval requests.
  */
-export function readPendingApprovals(): AuditEntry[] {
-  ensureDirs();
-  const files = readdirSync(PENDING_DIR).filter((f) => f.endsWith('.json'));
+export function readPendingApprovals(targetDir?: string): AuditEntry[] {
+  const baseDir = targetDir || getLogDir();
+  const pendingDir = join(baseDir, 'pending');
+  ensureDirs(baseDir);
+  const files = readdirSync(pendingDir).filter((f) => f.endsWith('.json'));
   return files.map((f) => {
     try {
-      return JSON.parse(readFileSync(join(PENDING_DIR, f), 'utf-8')) as AuditEntry;
+      return JSON.parse(readFileSync(join(pendingDir, f), 'utf-8')) as AuditEntry;
     } catch {
       return null;
     }
@@ -117,17 +235,19 @@ export function readPendingApprovals(): AuditEntry[] {
 /**
  * Remove a pending approval request after it's been handled.
  */
-export function removePendingApproval(id: string): void {
-  const filePath = join(PENDING_DIR, `${id}.json`);
+export function removePendingApproval(id: string, targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  const filePath = join(baseDir, 'pending', `${id}.json`);
   try { unlinkSync(filePath); } catch { /* already removed */ }
 }
 
 /**
  * Write a decision for a pending approval request.
  */
-export function writeDecision(id: string, approved: boolean): void {
-  ensureDirs();
-  const filePath = join(DECISIONS_DIR, `${id}.json`);
+export function writeDecision(id: string, approved: boolean, targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
+  const filePath = join(baseDir, 'decisions', `${id}.json`);
   writeFileSync(filePath, JSON.stringify({ id, approved, timestamp: new Date().toISOString() }), 'utf-8');
 }
 
@@ -135,8 +255,9 @@ export function writeDecision(id: string, approved: boolean): void {
  * Check if a decision exists for a pending approval.
  * Returns true (approved), false (rejected), or null (no decision yet).
  */
-export function readDecision(id: string): boolean | null {
-  const filePath = join(DECISIONS_DIR, `${id}.json`);
+export function readDecision(id: string, targetDir?: string): boolean | null {
+  const baseDir = targetDir || getLogDir();
+  const filePath = join(baseDir, 'decisions', `${id}.json`);
   if (!existsSync(filePath)) return null;
   try {
     const data = JSON.parse(readFileSync(filePath, 'utf-8'));
@@ -149,8 +270,9 @@ export function readDecision(id: string): boolean | null {
 /**
  * Remove a decision file after it's been consumed.
  */
-export function removeDecision(id: string): void {
-  const filePath = join(DECISIONS_DIR, `${id}.json`);
+export function removeDecision(id: string, targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  const filePath = join(baseDir, 'decisions', `${id}.json`);
   try { unlinkSync(filePath); } catch { /* already removed */ }
 }
 
@@ -159,12 +281,12 @@ export function removeDecision(id: string): void {
  * Polls the decisions directory until a file appears or timeout is reached.
  * Returns true (approved), false (rejected), or null (timed out).
  */
-export async function waitForDecision(id: string, timeoutMs: number = 120_000): Promise<boolean | null> {
+export async function waitForDecision(id: string, timeoutMs: number = 120_000, targetDir?: string): Promise<boolean | null> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const decision = readDecision(id);
+    const decision = readDecision(id, targetDir);
     if (decision !== null) {
-      removeDecision(id);
+      removeDecision(id, targetDir);
       return decision;
     }
     // Poll every 500ms
@@ -179,45 +301,50 @@ export async function waitForDecision(id: string, timeoutMs: number = 120_000): 
 /**
  * Clear the activity log file, ensuring directory exists.
  */
-export function clearActivityLog(): void {
-  ensureDirs();
-  writeFileSync(LOG_FILE, '', 'utf-8');
+export function clearActivityLog(targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
+  const logFile = join(baseDir, 'activity.log');
+  writeFileSync(logFile, '', 'utf-8');
 }
 
 /**
  * Append an activity entry to the shared log file.
  * Called by the MCP server when a tool is invoked.
  */
-export function logActivity(entry: ActivityEntry): void {
-  ensureDirs();
+export function logActivity(entry: ActivityEntry, targetDir?: string): void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
+  const logFile = join(baseDir, 'activity.log');
   const line = JSON.stringify(entry) + '\n';
-  appendFileSync(LOG_FILE, line, 'utf-8');
+  appendFileSync(logFile, line, 'utf-8');
 }
 
 /**
  * Watch the activity log and call the handler for each new entry.
  * Returns a cleanup function to stop watching.
  */
-export function watchActivityLog(handler: (entry: ActivityEntry) => void): () => void {
-  ensureDirs();
+export function watchActivityLog(handler: (entry: ActivityEntry) => void, targetDir?: string): () => void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
+  const logFile = join(baseDir, 'activity.log');
 
   // Create log file if it doesn't exist
-  if (!existsSync(LOG_FILE)) {
-    appendFileSync(LOG_FILE, '', 'utf-8');
+  if (!existsSync(logFile)) {
+    appendFileSync(logFile, '', 'utf-8');
   }
 
   // Track current file size to only read new content
-  const { statSync } = require('node:fs') as typeof import('node:fs');
   let lastSize = 0;
   try {
-    lastSize = statSync(LOG_FILE).size;
+    lastSize = statSync(logFile).size;
   } catch { /* fresh start */ }
 
   const interval = setInterval(() => {
     try {
-      const currentSize = statSync(LOG_FILE).size;
+      const currentSize = statSync(logFile).size;
       if (currentSize > lastSize) {
-        const fd = readFileSync(LOG_FILE, 'utf-8');
+        const fd = readFileSync(logFile, 'utf-8');
         const newContent = fd.substring(lastSize);
         lastSize = currentSize;
 
@@ -245,13 +372,14 @@ export function watchActivityLog(handler: (entry: ActivityEntry) => void): () =>
  * Watch the pending approvals directory for new requests.
  * Returns a cleanup function to stop watching.
  */
-export function watchPendingApprovals(handler: (entry: AuditEntry) => void): () => void {
-  ensureDirs();
+export function watchPendingApprovals(handler: (entry: AuditEntry) => void, targetDir?: string): () => void {
+  const baseDir = targetDir || getLogDir();
+  ensureDirs(baseDir);
   const seen = new Set<string>();
 
   const interval = setInterval(() => {
     try {
-      const pending = readPendingApprovals();
+      const pending = readPendingApprovals(baseDir);
       for (const entry of pending) {
         if (!seen.has(entry.id)) {
           seen.add(entry.id);
@@ -360,5 +488,3 @@ export function formatAuditEntry(entry: AuditEntry): string {
 export function generateAuditId(): string {
   return `mg-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 }
-
-export { LOG_FILE, AUDIT_FILE, LOG_DIR, PENDING_DIR, DECISIONS_DIR };
