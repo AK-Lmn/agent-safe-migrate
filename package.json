@@ -1,6 +1,6 @@
 {
   "name": "mgcheck",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Migration Guardian — Catch unsafe database migrations before they hit production",
   "type": "module",
   "bin": {

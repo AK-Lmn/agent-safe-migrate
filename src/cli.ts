@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import chalk from 'chalk';
 import { loadConfig } from './core/config.js';
 import { runCheck } from './core/engine.js';
 import { renderReport, getExitCode } from './reporter/index.js';
@@ -11,7 +12,7 @@ const program = new Command();
 program
   .name('mgcheck')
   .description('🛡️  Migration Guardian — Catch unsafe database migrations before they hit production')
-  .version('0.1.6');
+  .version('0.1.7');
 
 // ─── mgcheck run ────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ program
   .option('--ci', 'Machine-readable JSON output + exit codes only', false)
   .option('--confirm-destructive', 'Allow destructive operations (DROP, TRUNCATE)', false)
   .option('--verbose', 'Show detailed execution logs', false)
+  .option('--fix', 'Attempt zero-downtime auto-fix and prompt with verified diff if unsafe', false)
   .option('--config <path>', 'Path to config file')
   .action(async (inputPath: string, options: any) => {
     try {
@@ -56,6 +58,20 @@ program
         const approved = await promptDestructiveConfirmation(destructiveViolations, options.ci);
         if (approved) {
           config.confirmDestructive = true;
+          report = await runCheck(inputPath, config, 'run');
+        }
+      }
+
+      // If check failed and --fix was requested, attempt automated safe fix
+      if (!report.passed && options.fix && !options.ci) {
+        const { runAutoFix } = await import('./fixer/index.js');
+        const fixResult = await runAutoFix(inputPath, report.violations, {
+          seedFile: options.seed,
+          provider: options.provider,
+          config,
+        });
+
+        if (fixResult.fixed && fixResult.verified) {
           report = await runCheck(inputPath, config, 'run');
         }
       }
@@ -136,6 +152,51 @@ program
       } else {
         console.error(`\n  ❌ Error: ${(err as Error).message}\n`);
       }
+      process.exitCode = 3;
+    }
+  });
+
+// ─── mgcheck fix ───────────────────────────────────────────────────
+
+program
+  .command('fix')
+  .description('Automatically fix unsafe migrations with zero-downtime patterns and shadow DB verification')
+  .argument('<path>', 'Path to migration file')
+  .option('--seed <path>', 'Base schema SQL to apply before verification')
+  .option('--provider <provider>', 'Shadow DB provider: docker | pglite', 'pglite')
+  .option('--config <path>', 'Path to config file')
+  .action(async (inputPath: string, options: any) => {
+    try {
+      const config = buildConfig(options);
+      let report = await runCheck(inputPath, config, 'analyze');
+
+      if (report.passed) {
+        console.log(chalk.green('\n  ✅ Migration is already safe! No fixes needed.\n'));
+        return;
+      }
+
+      const { runAutoFix } = await import('./fixer/index.js');
+      const fixResult = await runAutoFix(inputPath, report.violations, {
+        seedFile: options.seed,
+        provider: options.provider,
+        config,
+      });
+
+      if (!fixResult.fixed) {
+        console.log(chalk.yellow('\n  ⚠️  No automated safe rewrite pattern available for these violations.\n'));
+        process.exitCode = 1;
+        return;
+      }
+
+      if (!fixResult.verified) {
+        console.log(chalk.red(`\n  ❌ Automated fix failed shadow verification: ${fixResult.verificationError}\n`));
+        process.exitCode = 1;
+        return;
+      }
+
+      process.exitCode = 0;
+    } catch (err) {
+      console.error(chalk.red(`\n  ❌ Error: ${(err as Error).message}\n`));
       process.exitCode = 3;
     }
   });

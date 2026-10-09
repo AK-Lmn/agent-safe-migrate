@@ -265,6 +265,7 @@ npx mgcheck hook uninstall
 | `npx mgcheck` / `mgcheck setup` | 1-Click setup wizard: auto-detects all 13 agents, wires MCP configs, and starts live watcher. |
 | `npx mgcheck run <path>` | Analyzes migration and executes it against a disposable shadow DB (`--provider pglite \| docker`). |
 | `npx mgcheck analyze <path>` | Static AST analysis only — checks 10 safety rules with zero database dependency. |
+| `npx mgcheck fix <path>` | Automatically fixes unsafe migrations with zero-downtime patterns and verified shadow DB diff. |
 | `npx mgcheck hook install` | Installs Git pre-commit safety hook to block unsafe migrations before commit. |
 | `npx mgcheck hook uninstall` | Removes the Git pre-commit hook. |
 | `npx mgcheck log` / `audit` | Views the project audit log of intercepted queries (`--global`, `--tail`, `--risk high`, `--json`). |

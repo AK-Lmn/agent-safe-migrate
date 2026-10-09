@@ -16,6 +16,7 @@ import {
 import type { AuditEntry } from '../core/activity-log.js';
 import { classifyRisk } from '../core/risk-classifier.js';
 import type { MigrationReport } from '../core/types.js';
+import { fixMigrationSql } from '../fixer/rules-fixer.js';
 
 /**
  * Register MCP tools on the server.
@@ -106,6 +107,9 @@ export function runMcpTools(server: McpServer) {
           writeAuditEntry(auditEntry);
           logActivityFromReport('check_migration', report);
 
+          // Compute suggested safe rewrite
+          const fixResult = fixMigrationSql(migration_sql, report.violations);
+
           return {
             content: [{
               type: 'text' as const,
@@ -115,6 +119,12 @@ export function runMcpTools(server: McpServer) {
                   risk: risk.level,
                   decision: 'blocked',
                   message: `🔴 BLOCKED by Migration Guardian. ${risk.errorCount} blocking error(s) detected. Fix the violations before proceeding.`,
+                  auto_fix: fixResult.fixed ? {
+                    available: true,
+                    suggested_safe_sql: fixResult.fixedSql,
+                    applied_fixes: fixResult.appliedFixes,
+                    instruction: "Replace your unsafe query with 'suggested_safe_sql' and run check_migration again.",
+                  } : undefined,
                 },
               }, null, 2),
             }],
@@ -395,6 +405,8 @@ export function runMcpTools(server: McpServer) {
               warningCount: 0,
             });
 
+            const fixResult = fixMigrationSql(migration_sql, blockingErrors);
+
             return {
               content: [{
                 type: 'text' as const,
@@ -402,6 +414,12 @@ export function runMcpTools(server: McpServer) {
                   success: false,
                   error: `SECURITY GATE REJECTION: Cannot apply migration. Detected ${blockingErrors.length} blocking violation(s): ${violationSummary}`,
                   violations: blockingErrors,
+                  auto_fix: fixResult.fixed ? {
+                    available: true,
+                    suggested_safe_sql: fixResult.fixedSql,
+                    applied_fixes: fixResult.appliedFixes,
+                    instruction: "You must use 'suggested_safe_sql' to apply zero-downtime safe migrations.",
+                  } : undefined,
                 }, null, 2),
               }],
               isError: true,

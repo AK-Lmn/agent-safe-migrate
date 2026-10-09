@@ -64,3 +64,15 @@ export {
   setLogDir,
 } from './core/activity-log.js';
 export type { AuditEntry, ActivityEntry } from './core/activity-log.js';
+
+// Auto-Fixer
+export {
+  fixMigrationSql,
+  generateDiff,
+  verifyFixedSql,
+  promptUserForFix,
+  formatColoredDiff,
+  runAutoFix,
+} from './fixer/index.js';
+export type { FixResult, AppliedFix } from './fixer/index.js';
+
