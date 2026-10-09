@@ -138,7 +138,28 @@ npx mgcheck uninstall --client cline   # Remove from Cline only
 
 # Automated CI Gate (outputs JSON + non-zero exit code on failure)
 npx mgcheck run ./migrations --ci
+
+# View per-project audit log (intercepted queries)
+npx mgcheck audit
+npx mgcheck log --global  # View machine-wide global audit entries
 ```
+
+---
+
+## 🗄️ Supported Migration Frameworks (8 Formats)
+
+Migration Guardian auto-detects your migration tooling format out-of-the-box:
+
+| Framework | Detection Criteria | Rollback / Down Detection |
+| :--- | :--- | :---: |
+| **Raw SQL** | Single `.sql` file or directory containing `.sql` files | Custom / Adjacent `.down.sql` |
+| **Prisma** | `prisma/migrations/*/migration.sql` | Auto-detected |
+| **Drizzle ORM** | `drizzle/*.sql` containing `meta/_journal.json` | Journal sequence |
+| **Supabase** | `supabase/migrations/*.sql` or `supabase/config.toml` | Migration order |
+| **Flyway** | Versioned `V<version>__<name>.sql` | Undo migrations (`U<version>__<name>.sql`) |
+| **Goose** | SQL files with `-- +goose Up` and `-- +goose Down` directives | Direct inline block parsing |
+| **golang-migrate** | Paired `<version>_<name>.up.sql` and `<version>_<name>.down.sql` | Paired `.down.sql` |
+| **dbmate** | `db/migrations/*.sql` with `-- migrate:up` / `-- migrate:down` | Direct inline block parsing |
 
 ---
 
@@ -246,7 +267,7 @@ npx mgcheck hook uninstall
 | `npx mgcheck analyze <path>` | Static AST analysis only — checks 10 safety rules with zero database dependency. |
 | `npx mgcheck hook install` | Installs Git pre-commit safety hook to block unsafe migrations before commit. |
 | `npx mgcheck hook uninstall` | Removes the Git pre-commit hook. |
-| `npx mgcheck log` | Views the audit log of intercepted queries (`--tail`, `--risk high`, `--json`). |
+| `npx mgcheck log` / `audit` | Views the project audit log of intercepted queries (`--global`, `--tail`, `--risk high`, `--json`). |
 | `npx mgcheck mcp` | Starts the stdio MCP server for direct AI agent integration. |
 | `npx mgcheck uninstall` | Cleanly uninstalls Migration Guardian from all AI agents and Git hooks. |
 

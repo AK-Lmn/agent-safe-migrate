@@ -11,7 +11,7 @@ const program = new Command();
 program
   .name('mgcheck')
   .description('🛡️  Migration Guardian — Catch unsafe database migrations before they hit production')
-  .version('0.1.5');
+  .version('0.1.6');
 
 // ─── mgcheck run ────────────────────────────────────────────────────
 
