@@ -127,3 +127,37 @@ describe('Migration Detector', () => {
     expect(() => detectMigration(pkgPath)).toThrow(/Expected a .sql file/);
   });
 });
+
+describe('Single-file detection inside framework layouts', () => {
+  const setup = (rel: string, extra?: (root: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), 'mgcheck-detect-'));
+    const file = join(root, rel);
+    mkdirSync(join(file, '..'), { recursive: true });
+    writeFileSync(file, 'CREATE TABLE users (id int);', 'utf-8');
+    extra?.(root);
+    return { root, file };
+  };
+
+  it('detects a single Prisma migration.sql as prisma', () => {
+    const { root, file } = setup('prisma/migrations/20260101_init/migration.sql');
+    const detected = detectMigration(file);
+    expect(detected.format).toBe('prisma');
+    expect(detected.files).toHaveLength(1);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('detects a single Supabase migration file as supabase', () => {
+    const { root, file } = setup('supabase/migrations/20260101_init.sql');
+    expect(detectMigration(file).format).toBe('supabase');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('detects a single Drizzle migration file as drizzle', () => {
+    const { root, file } = setup('drizzle/0000_init.sql', (r) => {
+      mkdirSync(join(r, 'drizzle', 'meta'), { recursive: true });
+      writeFileSync(join(r, 'drizzle', 'meta', '_journal.json'), '{"entries":[]}', 'utf-8');
+    });
+    expect(detectMigration(file).format).toBe('drizzle');
+    rmSync(root, { recursive: true, force: true });
+  });
+});

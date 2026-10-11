@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { runMcpTools } from './tools.js';
+import { VERSION } from '../version.js';
 
 /**
  * MCP Server for Migration Guardian.
@@ -14,7 +15,7 @@ import { runMcpTools } from './tools.js';
 async function main() {
   const server = new McpServer({
     name: 'mgcheck',
-    version: '0.1.0',
+    version: VERSION,
   });
 
   // Register tools

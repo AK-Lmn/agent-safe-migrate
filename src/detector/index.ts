@@ -1,5 +1,5 @@
 import { statSync, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import type { DetectedMigration } from '../core/types.js';
 import { detectRawSql, detectRawSqlDirectory } from './raw-sql.js';
 import { detectPrisma, isPrismaDirectory } from './prisma.js';
@@ -45,6 +45,18 @@ export function detectMigration(inputPath: string): DetectedMigration {
     const content = readFileSync(fullPath, 'utf-8');
     if (isGooseContent(content) || isDbmateContent(content)) {
       return detectGoose(fullPath);
+    }
+
+    // A single file inside a framework's layout (e.g. staged by the pre-commit hook)
+    const parentDir = dirname(fullPath);
+    if (basename(fullPath) === 'migration.sql' && isPrismaDirectory(parentDir)) {
+      return detectPrisma(parentDir);
+    }
+    if (resolve(parentDir).replace(/\\/g, '/').includes('/supabase/migrations')) {
+      return { ...detectRawSql(fullPath), format: 'supabase' };
+    }
+    if (isDrizzleDirectory(parentDir)) {
+      return { ...detectRawSql(fullPath), format: 'drizzle' };
     }
 
     return detectRawSql(fullPath);

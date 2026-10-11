@@ -232,11 +232,11 @@ describe('MG010: missing-down-migration', () => {
     expect(violations.length).toBe(0);
   });
 
-  it('should skip for Drizzle format', async () => {
+  it.each(['drizzle', 'prisma', 'supabase'] as const)('should skip for forward-only format: %s', async (format) => {
     const stmts = await parseSql('ALTER TABLE users ADD COLUMN status TEXT;');
     const context: RuleContext = {
       hasDownMigration: false,
-      format: 'drizzle',
+      format,
       fullSql: 'ALTER TABLE users ADD COLUMN status TEXT;',
     };
     const violations = missingDownMigration.check(stmts, context);

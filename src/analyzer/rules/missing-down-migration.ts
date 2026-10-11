@@ -1,4 +1,11 @@
 import type { Rule, ParsedStatement, RuleViolation, RuleContext } from './types.js';
+import type { MigrationFormat } from '../../core/types.js';
+
+/**
+ * Frameworks whose migration runner has no down/rollback step. Flagging them
+ * would warn on every single migration with nothing the user can act on.
+ */
+const FORWARD_ONLY_FORMATS: ReadonlySet<MigrationFormat> = new Set(['drizzle', 'prisma', 'supabase']);
 
 /**
  * MG010: Missing down/rollback migration
@@ -17,8 +24,7 @@ export const missingDownMigration: Rule = {
     const violations: RuleViolation[] = [];
 
     // Only check for frameworks that support down migrations
-    // Drizzle doesn't natively support them, so skip
-    if (context.format === 'drizzle') {
+    if (FORWARD_ONLY_FORMATS.has(context.format)) {
       return violations;
     }
 
@@ -35,8 +41,10 @@ export const missingDownMigration: Rule = {
         sql: '(no down migration file found)',
         suggestion:
           'Create a corresponding rollback migration:\n' +
-          '• For Prisma: Add a down.sql file in the same migration directory\n' +
-          '• For raw SQL: Create a corresponding *_down.sql or *_rollback.sql file\n\n' +
+          '• For raw SQL: Create a corresponding *_down.sql or *_rollback.sql file\n' +
+          '• For Flyway: Add an undo migration (U<version>__<name>.sql)\n' +
+          '• For goose / dbmate: Add a -- +goose Down / -- migrate:down section\n' +
+          '• For golang-migrate: Add the paired <version>_<name>.down.sql file\n\n' +
           'The rollback should reverse the changes made by this migration. For example:\n' +
           '  Up:   ALTER TABLE users ADD COLUMN status TEXT;\n' +
           '  Down: ALTER TABLE users DROP COLUMN status;',
