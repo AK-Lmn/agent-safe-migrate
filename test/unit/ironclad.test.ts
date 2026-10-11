@@ -38,8 +38,8 @@ describe('Ironclad Safety Gates', () => {
 
       const content = readFileSync(hookPath, 'utf-8');
       expect(content).toContain('Migration Guardian Git Pre-Commit Safety Hook');
-      expect(content).toContain('STAGED_MIGRATIONS');
-      expect(content).toContain('npx mgcheck run');
+      expect(content).toContain('git diff --cached');
+      expect(content).toContain('mgcheck hook run');
     });
 
     it('should uninstall pre-commit hook cleanly when requested', () => {

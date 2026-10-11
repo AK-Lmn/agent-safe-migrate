@@ -1,7 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { runCheck } from '../core/engine.js';
 import { loadConfig } from '../core/config.js';
@@ -12,6 +13,8 @@ import {
   waitForDecision,
   removePendingApproval,
   generateAuditId,
+  getLogDir,
+  getGlobalLogDir,
 } from '../core/activity-log.js';
 import type { AuditEntry } from '../core/activity-log.js';
 import { classifyRisk } from '../core/risk-classifier.js';
@@ -27,7 +30,9 @@ import { fixMigrationSql } from '../fixer/rules-fixer.js';
  *   🟡 MEDIUM → Pauses. Waits for user approval in the CLI watch terminal.
  *   🟢 LOW    → Pauses. Waits for user approval in the CLI watch terminal.
  *
- * All decisions are logged to ~/.mgcheck/audit.jsonl.
+ * Decisions are logged to the calling project's .mgcheck/audit.jsonl (see resolveProjectDir).
+ * Approval requests always go through the global ~/.mgcheck queue so a single
+ * `mgcheck setup` watcher sees requests from every project and editor.
  */
 export function runMcpTools(server: McpServer) {
   // ── Tool 1: check_migration ──────────────────────────────────────
@@ -56,9 +61,14 @@ export function runMcpTools(server: McpServer) {
         .describe(
           'Shadow database provider. "pglite" requires no Docker. "docker" gives full Postgres fidelity.'
         ),
+      project_dir: z
+        .string()
+        .optional()
+        .describe('Absolute path of the current workspace/project root. The audit log is written to <project_dir>/.mgcheck/audit.jsonl.'),
     },
-    async ({ migration_sql, base_schema_sql, confirm_destructive, provider }) => {
+    async ({ migration_sql, base_schema_sql, confirm_destructive, provider, project_dir }) => {
       try {
+        const { projectDir, auditDir, ipcDir } = await resolveStorage(server, project_dir);
         // Write SQL to a temp file for the engine
         const tmpDir = mkdtempSync(join(tmpdir(), 'mgcheck-'));
         const tmpFile = join(tmpDir, 'migration.sql');
@@ -87,6 +97,7 @@ export function runMcpTools(server: McpServer) {
           id: auditId,
           timestamp: new Date().toISOString(),
           tool: 'check_migration',
+          project: projectDir,
           risk: risk.level,
           decision: 'pending',
           query: migration_sql,
@@ -104,8 +115,8 @@ export function runMcpTools(server: McpServer) {
         if (risk.level === 'high') {
           // 🔴 HIGH RISK: Auto-block immediately
           auditEntry.decision = 'blocked';
-          writeAuditEntry(auditEntry);
-          logActivityFromReport('check_migration', report);
+          writeAuditEntry(auditEntry, auditDir);
+          logActivityFromReport('check_migration', report, auditDir);
 
           // Compute suggested safe rewrite
           const fixResult = fixMigrationSql(migration_sql, report.violations);
@@ -134,16 +145,16 @@ export function runMcpTools(server: McpServer) {
 
         // 🟡 MEDIUM / 🟢 LOW: Send to CLI watch terminal for user approval
         auditEntry.decision = 'pending';
-        writePendingApproval(auditEntry);
+        writePendingApproval(auditEntry, ipcDir);
 
         // Wait for the user to approve or reject in the CLI (up to 2 minutes)
-        const approved = await waitForDecision(auditId, 120_000);
-        removePendingApproval(auditId);
+        const approved = await waitForDecision(auditId, 120_000, ipcDir);
+        removePendingApproval(auditId, ipcDir);
 
         if (approved === true) {
           auditEntry.decision = 'user_approved';
-          writeAuditEntry(auditEntry);
-          logActivityFromReport('check_migration', report);
+          writeAuditEntry(auditEntry, auditDir);
+          logActivityFromReport('check_migration', report, auditDir);
 
           const responseData = {
             ...report,
@@ -167,7 +178,7 @@ export function runMcpTools(server: McpServer) {
         } else {
           // User rejected or timed out
           auditEntry.decision = approved === false ? 'user_rejected' : 'user_rejected';
-          writeAuditEntry(auditEntry);
+          writeAuditEntry(auditEntry, auditDir);
 
           return {
             content: [{
@@ -210,9 +221,14 @@ export function runMcpTools(server: McpServer) {
         .boolean()
         .default(false)
         .describe('Set to true to allow destructive operations'),
+      project_dir: z
+        .string()
+        .optional()
+        .describe('Absolute path of the current workspace/project root. The audit log is written to <project_dir>/.mgcheck/audit.jsonl.'),
     },
-    async ({ migration_sql, confirm_destructive }) => {
+    async ({ migration_sql, confirm_destructive, project_dir }) => {
       try {
+        const { projectDir, auditDir, ipcDir } = await resolveStorage(server, project_dir);
         const tmpDir = mkdtempSync(join(tmpdir(), 'mgcheck-'));
         const tmpFile = join(tmpDir, 'migration.sql');
         writeFileSync(tmpFile, migration_sql, 'utf-8');
@@ -230,6 +246,7 @@ export function runMcpTools(server: McpServer) {
           id: auditId,
           timestamp: new Date().toISOString(),
           tool: 'analyze_migration',
+          project: projectDir,
           risk: risk.level,
           decision: 'pending',
           query: migration_sql,
@@ -246,8 +263,8 @@ export function runMcpTools(server: McpServer) {
         // 🔴 HIGH: Auto-block
         if (risk.level === 'high') {
           auditEntry.decision = 'blocked';
-          writeAuditEntry(auditEntry);
-          logActivityFromReport('analyze_migration', report);
+          writeAuditEntry(auditEntry, auditDir);
+          logActivityFromReport('analyze_migration', report, auditDir);
 
           return {
             content: [{
@@ -266,14 +283,14 @@ export function runMcpTools(server: McpServer) {
         }
 
         // 🟡 MEDIUM / 🟢 LOW: Wait for user approval
-        writePendingApproval(auditEntry);
-        const approved = await waitForDecision(auditId, 120_000);
-        removePendingApproval(auditId);
+        writePendingApproval(auditEntry, ipcDir);
+        const approved = await waitForDecision(auditId, 120_000, ipcDir);
+        removePendingApproval(auditId, ipcDir);
 
         if (approved === true) {
           auditEntry.decision = 'user_approved';
-          writeAuditEntry(auditEntry);
-          logActivityFromReport('analyze_migration', report);
+          writeAuditEntry(auditEntry, auditDir);
+          logActivityFromReport('analyze_migration', report, auditDir);
 
           return {
             content: [{
@@ -290,7 +307,7 @@ export function runMcpTools(server: McpServer) {
           };
         } else {
           auditEntry.decision = 'user_rejected';
-          writeAuditEntry(auditEntry);
+          writeAuditEntry(auditEntry, auditDir);
 
           return {
             content: [{
@@ -347,9 +364,14 @@ export function runMcpTools(server: McpServer) {
         .describe(
           'Set to true only if the human user explicitly confirmed performing a destructive operation (DROP TABLE/COLUMN).'
         ),
+      project_dir: z
+        .string()
+        .optional()
+        .describe('Absolute path of the current workspace/project root. The audit log is written to <project_dir>/.mgcheck/audit.jsonl.'),
     },
-    async ({ migration_sql, db_url, confirm_user_approved, confirm_destructive }) => {
+    async ({ migration_sql, db_url, confirm_user_approved, confirm_destructive, project_dir }) => {
       try {
+        const { projectDir, auditDir, ipcDir } = await resolveStorage(server, project_dir);
         if (!confirm_user_approved) {
           return {
             content: [{
@@ -392,6 +414,7 @@ export function runMcpTools(server: McpServer) {
               id: auditId,
               timestamp: new Date().toISOString(),
               tool: 'apply_migration',
+              project: projectDir,
               risk: 'high',
               decision: 'blocked',
               query: migration_sql,
@@ -403,7 +426,7 @@ export function runMcpTools(server: McpServer) {
               })),
               errorCount: blockingErrors.length,
               warningCount: 0,
-            });
+            }, auditDir);
 
             const fixResult = fixMigrationSql(migration_sql, blockingErrors);
 
@@ -431,6 +454,7 @@ export function runMcpTools(server: McpServer) {
             id: auditId,
             timestamp: new Date().toISOString(),
             tool: 'apply_migration',
+            project: projectDir,
             risk: risk.level,
             decision: 'pending',
             query: migration_sql,
@@ -444,13 +468,13 @@ export function runMcpTools(server: McpServer) {
             warningCount: risk.warningCount,
           };
 
-          writePendingApproval(applyAudit);
-          const approved = await waitForDecision(auditId, 120_000);
-          removePendingApproval(auditId);
+          writePendingApproval(applyAudit, ipcDir);
+          const approved = await waitForDecision(auditId, 120_000, ipcDir);
+          removePendingApproval(auditId, ipcDir);
 
           if (approved !== true) {
             applyAudit.decision = 'user_rejected';
-            writeAuditEntry(applyAudit);
+            writeAuditEntry(applyAudit, auditDir);
 
             return {
               content: [{
@@ -471,7 +495,7 @@ export function runMcpTools(server: McpServer) {
           }
 
           applyAudit.decision = 'user_approved';
-          writeAuditEntry(applyAudit);
+          writeAuditEntry(applyAudit, auditDir);
         } finally {
           try {
             rmSync(verifyDir, { recursive: true, force: true });
@@ -514,7 +538,7 @@ export function runMcpTools(server: McpServer) {
             .split(';')
             .map((s) => s.trim())
             .filter(Boolean),
-        });
+        }, auditDir);
 
         return {
           content: [{
@@ -541,7 +565,7 @@ export function runMcpTools(server: McpServer) {
 /**
  * Extract info from a report and write to the shared activity log.
  */
-function logActivityFromReport(tool: string, report: MigrationReport): void {
+function logActivityFromReport(tool: string, report: MigrationReport, targetDir?: string): void {
   try {
     const errors = report.violations.filter((v) => v.severity === 'error').length;
     const warnings = report.violations.filter((v) => v.severity === 'warning').length;
@@ -558,8 +582,36 @@ function logActivityFromReport(tool: string, report: MigrationReport): void {
       warnings,
       passed: report.passed,
       statements: stmts,
-    });
+    }, targetDir);
   } catch {
     // Never let logging break the MCP response
   }
+}
+
+/**
+ * Decide where this tool call's audit log goes.
+ * Priority: explicit project_dir argument → first file:// MCP root from the
+ * client → the server's cwd. Editors often launch MCP servers from the home or
+ * install directory, so cwd alone would send every project's log to ~/.mgcheck.
+ */
+async function resolveStorage(server: McpServer, projectDirArg?: string): Promise<{
+  projectDir: string;
+  auditDir: string;
+  ipcDir: string;
+}> {
+  let projectDir = process.cwd();
+  if (projectDirArg && existsSync(projectDirArg)) {
+    projectDir = resolve(projectDirArg);
+  } else {
+    try {
+      if (server.server.getClientCapabilities()?.roots) {
+        const { roots } = await server.server.listRoots(undefined, { timeout: 2_000 });
+        const fileRoot = roots.find((r) => r.uri.startsWith('file://'));
+        if (fileRoot) projectDir = fileURLToPath(fileRoot.uri);
+      }
+    } catch {
+      // Client doesn't answer roots/list — fall back to cwd
+    }
+  }
+  return { projectDir, auditDir: getLogDir(projectDir), ipcDir: getGlobalLogDir() };
 }

@@ -128,6 +128,8 @@ export interface AuditEntry {
   timestamp: string;
   /** Which MCP tool triggered this */
   tool: string;
+  /** Project directory the query came from (where its audit log is written) */
+  project?: string;
   /** Risk classification */
   risk: RiskLevel;
   /** What happened */

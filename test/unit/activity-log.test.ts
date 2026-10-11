@@ -171,3 +171,65 @@ describe('Per-Project Audit Log & Storage Resolution', () => {
     });
   });
 });
+
+describe('MCP tool storage routing', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'mgcheck-routing-'));
+    writeFileSync(join(projectDir, 'package.json'), '{}', 'utf-8');
+    setLogDir(null);
+    delete process.env.MGCHECK_STORAGE_DIR;
+  });
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  async function getTool(name: string) {
+    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+    const { runMcpTools } = await import('../../src/mcp/tools.js');
+    const server = new McpServer({ name: 'test-server', version: '1.0.0' });
+    runMcpTools(server);
+    return (server as any)._registeredTools[name];
+  }
+
+  it('writes the audit entry to <project_dir>/.mgcheck even when cwd is elsewhere', async () => {
+    const tool = await getTool('apply_migration');
+    await tool.handler({
+      migration_sql: 'CREATE INDEX idx_users ON users (email);',
+      confirm_user_approved: true,
+      project_dir: projectDir,
+    });
+
+    const entries = readAuditLog({ path: join(projectDir, '.mgcheck', 'audit.jsonl') });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].decision).toBe('blocked');
+    expect(entries[0].project).toBe(projectDir);
+  });
+
+  it('routes approval requests through the global queue and logs the decision per project', async () => {
+    const { getGlobalLogDir, readPendingApprovals, writeDecision } = await import('../../src/core/activity-log.js');
+    const ipcDir = getGlobalLogDir();
+    const tool = await getTool('analyze_migration');
+
+    const pending = tool.handler({
+      migration_sql: 'CREATE INDEX CONCURRENTLY idx_users ON users (email);',
+      project_dir: projectDir,
+    });
+
+    let request: AuditEntry | undefined;
+    for (let i = 0; i < 100 && !request; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      request = readPendingApprovals(ipcDir).find((e) => e.project === projectDir);
+    }
+    expect(request).toBeDefined();
+    expect(existsSync(join(projectDir, '.mgcheck', 'pending'))).toBe(false);
+    writeDecision(request!.id, true, ipcDir);
+
+    const response = await pending;
+    expect(response.isError).toBeFalsy();
+    const entries = readAuditLog({ path: join(projectDir, '.mgcheck', 'audit.jsonl') });
+    expect(entries.map((e) => e.decision)).toEqual(['user_approved']);
+  });
+});

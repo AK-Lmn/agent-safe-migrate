@@ -2,7 +2,7 @@ import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { SetupOptions } from './index.js';
-import { detectClients, setupMcp, verifyConnections, uninstallMcp } from './index.js';
+import { detectClients, setupMcp, verifyConnections, uninstallMcp, findConnections } from './index.js';
 
 /**
  * Interactive Wizard: Auto-detects clients, prompts the user, and connects.
@@ -84,10 +84,14 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     removePendingApproval,
     clearActivityLog,
     getAuditFile,
+    getGlobalLogDir,
   } = await import('../core/activity-log.js');
 
+  // Approval requests from every project/editor flow through the global ~/.mgcheck queue
+  const ipcDir = getGlobalLogDir();
+
   const auditPath = getAuditFile(options.workspaceDir || process.cwd());
-  console.log(chalk.white(`  Audit Log: ${auditPath}`));
+  console.log(chalk.white(`  Audit Log: ${auditPath}`) + chalk.dim(' (each project logs to its own .mgcheck/audit.jsonl)'));
   console.log(chalk.white('  View log anytime: mgcheck log\n'));
 
   // ── Enter Watch Mode ──────────────────────────────────────────────
@@ -136,6 +140,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     console.log(chalk.dim('  │'));
     console.log(chalk.dim('  │  ') + chalk.white('Timestamp  : ') + chalk.cyan(`${dateStr}, ${timeStr}`));
     console.log(chalk.dim('  │  ') + chalk.white('Audit ID   : ') + chalk.dim(entry.id));
+    if (entry.project) {
+      console.log(chalk.dim('  │  ') + chalk.white('Project    : ') + chalk.cyan(entry.project));
+    }
     console.log(chalk.dim('  │  ') + chalk.white('Risk Level : ') + color(`${emoji} ${entry.risk.toUpperCase()}`));
     console.log(chalk.dim('  │  ') + chalk.dim(`             ${riskExplanation[entry.risk] || ''}`));
     console.log(chalk.dim('  │'));
@@ -203,8 +210,8 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
       const trimmed = answer.trim().toLowerCase();
       const approved = trimmed === 'y' || trimmed === 'yes';
 
-      writeDecision(entry.id, approved);
-      removePendingApproval(entry.id);
+      writeDecision(entry.id, approved, ipcDir);
+      removePendingApproval(entry.id, ipcDir);
 
       if (approved) {
         console.log(chalk.green('  ✅ Approved — AI agent may proceed.\n'));
@@ -216,10 +223,10 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
       console.log('');
     } catch {
       // readline was closed (e.g. Ctrl+C during prompt)
-      writeDecision(entry.id, false);
-      removePendingApproval(entry.id);
+      writeDecision(entry.id, false, ipcDir);
+      removePendingApproval(entry.id, ipcDir);
     }
-  });
+  }, ipcDir);
 
   // Keep the process alive with an active interval timer
   const keepAlive = setInterval(() => {}, 1000 * 60 * 60);
@@ -266,11 +273,31 @@ export async function runUninstallWizard(options: SetupOptions = {}) {
   const results = uninstallMcp(options);
 
   if (results.length === 0) {
-    console.log(chalk.dim('  No active Migration Guardian configurations were found to remove.\n'));
+    console.log(chalk.dim('  No active Migration Guardian configurations were found to remove.'));
   } else {
     for (const res of results) {
       console.log(res);
     }
-    console.log(chalk.bold.green('\n  ✨ Migration Guardian has been cleanly uninstalled.\n'));
   }
+
+  // ── Verify nothing is left behind ─────────────────────────────────
+  const remaining = (options.client || 'all').toLowerCase() === 'all'
+    ? findConnections(options.workspaceDir || process.cwd())
+    : [];
+  if (remaining.length > 0) {
+    console.log(chalk.yellow('\n  ⚠  Migration Guardian is still configured in:'));
+    for (const r of remaining) {
+      console.log(chalk.yellow(`     • ${r.name}`) + chalk.dim(` (${r.file})`));
+    }
+    console.log(chalk.dim('     Close the editor that owns the file and run `mgcheck uninstall` again, or remove the "migration-guardian" entry by hand.'));
+  } else if (results.length > 0) {
+    console.log(chalk.bold.green('\n  ✨ Migration Guardian has been cleanly uninstalled.'));
+  }
+
+  console.log(chalk.dim('\n  • Restart your editors/agents to stop any MCP server that is still running.'));
+  console.log(chalk.dim('  • mgcheck runs via npx, so there is no package to remove (if you ran `npm i -g mgcheck`: `npm uninstall -g mgcheck`).'));
+  if (!options.purge) {
+    console.log(chalk.dim('  • Audit logs in .mgcheck/ were kept. Use `mgcheck uninstall --purge` to delete them too.'));
+  }
+  console.log('');
 }

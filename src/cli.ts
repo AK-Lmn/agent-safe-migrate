@@ -6,13 +6,14 @@ import { loadConfig } from './core/config.js';
 import { runCheck } from './core/engine.js';
 import { renderReport, getExitCode } from './reporter/index.js';
 import type { MgcheckConfig, OutputFormat, ShadowProvider } from './core/types.js';
+import { VERSION } from './version.js';
 
 const program = new Command();
 
 program
   .name('mgcheck')
   .description('🛡️  Migration Guardian — Catch unsafe database migrations before they hit production')
-  .version('0.1.7');
+  .version(VERSION);
 
 // ─── mgcheck run ────────────────────────────────────────────────────
 
@@ -241,9 +242,10 @@ program
     'Target client: antigravity | cursor | claude | claude-code | cline | roo | continue | windsurf | zed | goose | aider | openhands | all',
     'all'
   )
+  .option('--purge', 'Also delete audit logs (~/.mgcheck and ./.mgcheck) and the .gitignore entry', false)
   .action(async (options: any) => {
     const { runUninstallWizard } = await import('./installer/index.js');
-    await runUninstallWizard({ yes: options.yes, client: options.client });
+    await runUninstallWizard({ yes: options.yes, client: options.client, purge: options.purge });
   });
 
 // ─── mgcheck hook ───────────────────────────────────────────────────
@@ -251,9 +253,13 @@ program
 program
   .command('hook')
   .description('Manage Git pre-commit safety hooks in the current repository')
-  .argument('[action]', 'Action to perform: install | uninstall | status', 'install')
+  .argument('[action]', 'Action to perform: install | uninstall | run (check staged .sql files; used by the hook)', 'install')
   .action(async (action: string) => {
     const { installGitHook, uninstallGitHook } = await import('./installer/index.js');
+    if (action === 'run') {
+      process.exitCode = await runStagedMigrationCheck();
+      return;
+    }
     if (action === 'install') {
       const res = installGitHook(process.cwd());
       if (res) {
@@ -268,8 +274,61 @@ program
       } else {
         console.log('\n  ℹ️  No active Migration Guardian Git hook found. Skipped.\n');
       }
+    } else {
+      console.error(`\n  ❌ Unknown hook action "${action}". Use: install | uninstall | run\n`);
+      process.exitCode = 1;
     }
   });
+
+/**
+ * Static check of every staged .sql file (no shadow DB, so it stays fast enough
+ * for a pre-commit hook). Only blocking errors fail the commit; warnings are shown.
+ */
+async function runStagedMigrationCheck(): Promise<number> {
+  const { relative } = await import('node:path');
+  const { getStagedMigrations } = await import('./installer/index.js');
+
+  let files: string[];
+  try {
+    files = getStagedMigrations(process.cwd());
+  } catch {
+    console.error(chalk.red('  ❌ Migration Guardian: not inside a Git repository.'));
+    return 1;
+  }
+  if (files.length === 0) return 0;
+
+  console.log(chalk.cyan(`🛡️  Migration Guardian: checking ${files.length} staged migration${files.length === 1 ? '' : 's'}...`));
+  const config = buildConfig({ format: 'terminal' });
+  const rejected: string[] = [];
+
+  for (const file of files) {
+    const name = relative(process.cwd(), file);
+    try {
+      const report = await runCheck(file, config, 'analyze');
+      if (!report.passed) {
+        rejected.push(name);
+        console.log(renderReport(report, 'terminal'));
+      } else {
+        for (const v of report.violations) {
+          console.log(chalk.yellow(`  ⚠ ${name}${v.line != null ? `:${v.line}` : ''} [${v.ruleId}] `) + v.message);
+        }
+      }
+    } catch (err) {
+      rejected.push(name);
+      console.log(chalk.red(`  ✗ ${name}: ${(err as Error).message}`));
+    }
+  }
+
+  if (rejected.length > 0) {
+    console.log(chalk.red.bold(`\n❌ Commit rejected: unsafe migration${rejected.length === 1 ? '' : 's'} in ${rejected.join(', ')}`));
+    console.log(chalk.dim(`💡 Auto-fix with: npx mgcheck fix ${rejected[0]}`));
+    console.log(chalk.dim('   Bypass once (not recommended): git commit --no-verify\n'));
+    return 1;
+  }
+
+  console.log(chalk.green('✅ Migration Guardian: staged migrations passed (warnings do not block commits).'));
+  return 0;
+}
 
 // ─── mgcheck log ────────────────────────────────────────────────────
 

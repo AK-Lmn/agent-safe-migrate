@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
@@ -8,6 +8,8 @@ export interface SetupOptions {
   client?: string;
   yes?: boolean;
   withRules?: boolean;
+  /** Uninstall only: also delete audit logs (~/.mgcheck and <project>/.mgcheck) */
+  purge?: boolean;
   workspaceDir?: string;
 }
 
@@ -91,6 +93,209 @@ export function getGooseConfigPath(): string {
     }
   }
   return join(os.homedir(), '.config', 'goose', 'config.yaml');
+}
+
+export function getClaudeDesktopConfigPath(): string {
+  if (process.platform === 'win32') {
+    return join(process.env.APPDATA || '', 'Claude', 'claude_desktop_config.json');
+  } else if (process.platform === 'darwin') {
+    return join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  }
+  return join(os.homedir(), '.config', 'Claude', 'claude_desktop_config.json');
+}
+
+const MCP_KEY = 'migration-guardian';
+const BLOCK_START = '# >>> migration-guardian';
+const BLOCK_END = '# <<< migration-guardian';
+
+/**
+ * Strip // and /* *\/ comments and trailing commas from JSONC text (string-aware).
+ * Editors like Zed and VS Code allow these in their settings files.
+ */
+export function stripJsonc(text: string): string {
+  const removeComments = (src: string): string => {
+    let out = '';
+    let inStr = false;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      const next = src[i + 1];
+      if (inStr) {
+        out += ch;
+        if (ch === '\\') {
+          out += next ?? '';
+          i++;
+        } else if (ch === '"') {
+          inStr = false;
+        }
+      } else if (ch === '"') {
+        inStr = true;
+        out += ch;
+      } else if (ch === '/' && next === '/') {
+        while (i < src.length && src[i] !== '\n') i++;
+        out += '\n';
+      } else if (ch === '/' && next === '*') {
+        const end = src.indexOf('*/', i + 2);
+        i = end === -1 ? src.length : end + 1;
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  };
+
+  const removeTrailingCommas = (src: string): string => {
+    let out = '';
+    let inStr = false;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (inStr) {
+        out += ch;
+        if (ch === '\\') {
+          out += src[i + 1] ?? '';
+          i++;
+        } else if (ch === '"') {
+          inStr = false;
+        }
+      } else if (ch === '"') {
+        inStr = true;
+        out += ch;
+      } else if (ch === ',' && /^\s*[}\]]/.test(src.slice(i + 1))) {
+        // drop trailing comma
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  };
+
+  return removeTrailingCommas(removeComments(text.replace(/^﻿/, '')));
+}
+
+/**
+ * Read a JSON/JSONC config file. Returns {} when the file is missing or empty.
+ * Throws when the file exists but cannot be parsed — callers must never
+ * overwrite a file they could not read.
+ */
+export function readJsonConfig(filePath: string): any {
+  if (!existsSync(filePath)) return {};
+  const raw = readFileSync(filePath, 'utf-8');
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(stripJsonc(raw));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    throw new Error(`Could not parse ${filePath} (left untouched): ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Write a JSON config file, saving a one-time `.mgcheck.bak` of the original first.
+ */
+export function writeJsonConfig(filePath: string, config: any): void {
+  backupOnce(filePath);
+  writeFileSync(filePath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+}
+
+function backupOnce(filePath: string): void {
+  const backup = `${filePath}.mgcheck.bak`;
+  if (existsSync(filePath) && !existsSync(backup)) {
+    copyFileSync(filePath, backup);
+  }
+}
+
+/**
+ * Add the migration-guardian server entry to a JSON MCP config file.
+ */
+function upsertMcpEntry(filePath: string, value: unknown, key = 'mcpServers'): void {
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const config = readJsonConfig(filePath);
+  if (!config[key] || typeof config[key] !== 'object') config[key] = {};
+  config[key][MCP_KEY] = value;
+  writeJsonConfig(filePath, config);
+}
+
+/**
+ * Remove a `# >>> migration-guardian` … `# <<< migration-guardian` block (inclusive).
+ */
+function removeMarkedBlock(content: string): string {
+  const lines = content.split('\n');
+  const out: string[] = [];
+  let inside = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t === BLOCK_START) {
+      inside = true;
+      continue;
+    }
+    if (t === BLOCK_END) {
+      inside = false;
+      continue;
+    }
+    if (!inside) out.push(line);
+  }
+  return out.join('\n');
+}
+
+/**
+ * Insert the migration-guardian Goose extension, nesting it under an existing
+ * top-level `extensions:` key instead of creating a duplicate key.
+ */
+export function addGooseExtension(yamlContent: string): string {
+  const entry = [
+    `  ${BLOCK_START}`,
+    `  ${MCP_KEY}:`,
+    `    name: ${MCP_KEY}`,
+    '    cmd: npx',
+    '    args:',
+    '      - -y',
+    '      - mgcheck',
+    '      - mcp',
+    '    type: stdio',
+    '    enabled: true',
+    `  ${BLOCK_END}`,
+  ];
+  const lines = yamlContent.split('\n');
+  const extIdx = lines.findIndex((l) => /^extensions:\s*(#.*)?$/.test(l));
+  if (extIdx !== -1) {
+    lines.splice(extIdx + 1, 0, ...entry);
+    return lines.join('\n');
+  }
+  if (lines.some((l) => /^extensions:/.test(l))) {
+    throw new Error('Goose config uses an inline `extensions:` value; add migration-guardian manually.');
+  }
+  const base = yamlContent.trimEnd();
+  return `${base ? base + '\n' : ''}extensions:\n${entry.join('\n')}\n`;
+}
+
+/**
+ * Remove the migration-guardian Goose extension. Handles marked blocks and
+ * legacy (unmarked) installs without touching sibling extensions.
+ */
+export function removeGooseExtension(yamlContent: string): string {
+  let lines = removeMarkedBlock(yamlContent).split('\n');
+
+  // Legacy installs: drop the `migration-guardian:` key and its more-indented children
+  const keyIdx = lines.findIndex((l) => /^\s*migration-guardian:\s*$/.test(l));
+  if (keyIdx !== -1) {
+    const indent = lines[keyIdx].search(/\S/);
+    let end = keyIdx + 1;
+    while (end < lines.length) {
+      const l = lines[end];
+      if (l.trim() !== '' && l.search(/\S/) <= indent) break;
+      end++;
+    }
+    lines.splice(keyIdx, end - keyIdx);
+  }
+
+  // Drop `extensions:` keys that are now empty
+  lines = lines.filter((l, i) => {
+    if (!/^extensions:\s*$/.test(l)) return true;
+    const next = lines.slice(i + 1).find((n) => n.trim() !== '');
+    return next !== undefined && /^\s/.test(next);
+  });
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
 
 /**
@@ -253,26 +458,8 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   // 1. Google Antigravity Configuration (~/.gemini/config/mcp_config.json)
   if (targetClient === 'all' || targetClient === 'antigravity' || targetClient === 'gemini') {
     try {
-      const geminiConfigDir = join(os.homedir(), '.gemini', 'config');
-      const mcpConfigFile = join(geminiConfigDir, 'mcp_config.json');
-
-      if (!existsSync(geminiConfigDir)) {
-        mkdirSync(geminiConfigDir, { recursive: true });
-      }
-
-      let config: any = { mcpServers: {} };
-      if (existsSync(mcpConfigFile)) {
-        try {
-          config = JSON.parse(readFileSync(mcpConfigFile, 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-          config = { mcpServers: {} };
-        }
-      }
-
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-
-      writeFileSync(mcpConfigFile, JSON.stringify(config, null, 2), 'utf-8');
+      const mcpConfigFile = join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
+      upsertMcpEntry(mcpConfigFile, mcpServerConfig);
       results.push(chalk.green('  ✅ Google Antigravity') + chalk.dim(` (${mcpConfigFile})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Google Antigravity: ') + (err as Error).message);
@@ -282,32 +469,13 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   // 2. Cursor Configuration (Global ~/.cursor/mcp.json — zero workspace clutter)
   if (targetClient === 'all' || targetClient === 'cursor') {
     try {
-      const cursorDir = join(os.homedir(), '.cursor');
-      const cursorFile = join(cursorDir, 'mcp.json');
-
-      if (!existsSync(cursorDir)) {
-        mkdirSync(cursorDir, { recursive: true });
-      }
-
-      let config: any = { mcpServers: {} };
-      if (existsSync(cursorFile)) {
-        try {
-          config = JSON.parse(readFileSync(cursorFile, 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-          config = { mcpServers: {} };
-        }
-      }
-
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-
-      writeFileSync(cursorFile, JSON.stringify(config, null, 2), 'utf-8');
+      const cursorFile = join(os.homedir(), '.cursor', 'mcp.json');
+      upsertMcpEntry(cursorFile, mcpServerConfig);
       results.push(chalk.green('  ✅ Cursor IDE') + chalk.dim(` (${cursorFile})`));
 
-      // If a local .cursor already exists in the workspace, also update it
-      const localCursorFile = join(workspaceDir, '.cursor', 'mcp.json');
+      // If a local .cursor already exists in the workspace, also add the entry there
       if (existsSync(join(workspaceDir, '.cursor'))) {
-        writeFileSync(localCursorFile, JSON.stringify(config, null, 2), 'utf-8');
+        upsertMcpEntry(join(workspaceDir, '.cursor', 'mcp.json'), mcpServerConfig);
       }
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Cursor IDE: ') + (err as Error).message);
@@ -317,31 +485,8 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   // 3. Claude Desktop Configuration
   if (targetClient === 'claude' || targetClient === 'claude-desktop' || (targetClient === 'all' && detected.claude)) {
     try {
-      let claudeDir = '';
-      if (process.platform === 'win32') {
-        claudeDir = join(process.env.APPDATA || '', 'Claude');
-      } else if (process.platform === 'darwin') {
-        claudeDir = join(os.homedir(), 'Library', 'Application Support', 'Claude');
-      } else {
-        claudeDir = join(os.homedir(), '.config', 'Claude');
-      }
-
-      const claudeConfigFile = join(claudeDir, 'claude_desktop_config.json');
-
-      if (!existsSync(claudeDir)) mkdirSync(claudeDir, { recursive: true });
-      let config: any = { mcpServers: {} };
-      if (existsSync(claudeConfigFile)) {
-        try {
-          config = JSON.parse(readFileSync(claudeConfigFile, 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-          config = { mcpServers: {} };
-        }
-      }
-
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-
-      writeFileSync(claudeConfigFile, JSON.stringify(config, null, 2), 'utf-8');
+      const claudeConfigFile = getClaudeDesktopConfigPath();
+      upsertMcpEntry(claudeConfigFile, mcpServerConfig);
       results.push(chalk.green('  ✅ Claude Desktop') + chalk.dim(` (${claudeConfigFile})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Claude Desktop: ') + (err as Error).message);
@@ -352,17 +497,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   if (targetClient === 'claude-code' || targetClient === 'claudecode' || (targetClient === 'all' && detected.claudeCode)) {
     try {
       const claudeCodeFile = join(os.homedir(), '.claude.json');
-      let config: any = {};
-      if (existsSync(claudeCodeFile)) {
-        try {
-          config = JSON.parse(readFileSync(claudeCodeFile, 'utf-8'));
-        } catch {
-          config = {};
-        }
-      }
-      if (!config.mcpServers) config.mcpServers = {};
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-      writeFileSync(claudeCodeFile, JSON.stringify(config, null, 2), 'utf-8');
+      upsertMcpEntry(claudeCodeFile, mcpServerConfig);
       results.push(chalk.green('  ✅ Claude Code CLI') + chalk.dim(` (${claudeCodeFile})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Claude Code CLI: ') + (err as Error).message);
@@ -373,19 +508,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   if (targetClient === 'cline' || (targetClient === 'all' && detected.cline)) {
     try {
       const clineFile = getClineMcpPath();
-      const clineDir = dirname(clineFile);
-      if (!existsSync(clineDir)) mkdirSync(clineDir, { recursive: true });
-      let config: any = { mcpServers: {} };
-      if (existsSync(clineFile)) {
-        try {
-          config = JSON.parse(readFileSync(clineFile, 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-          config = { mcpServers: {} };
-        }
-      }
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-      writeFileSync(clineFile, JSON.stringify(config, null, 2), 'utf-8');
+      upsertMcpEntry(clineFile, mcpServerConfig);
       results.push(chalk.green('  ✅ Cline') + chalk.dim(` (${clineFile})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Cline: ') + (err as Error).message);
@@ -396,23 +519,10 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   if (targetClient === 'roo' || targetClient === 'roo-code' || targetClient === 'roocode' || (targetClient === 'all' && detected.rooCode)) {
     try {
       const rooFile = getRooMcpPath();
-      const rooDir = dirname(rooFile);
-      if (!existsSync(rooDir)) mkdirSync(rooDir, { recursive: true });
-      let config: any = { mcpServers: {} };
-      if (existsSync(rooFile)) {
-        try {
-          config = JSON.parse(readFileSync(rooFile, 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-          config = { mcpServers: {} };
-        }
-      }
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-      writeFileSync(rooFile, JSON.stringify(config, null, 2), 'utf-8');
+      upsertMcpEntry(rooFile, mcpServerConfig);
 
-      // Also mirror to roo_mcp_settings.json for multi-version Roo compatibility
-      const rooAltFile = join(rooDir, 'roo_mcp_settings.json');
-      writeFileSync(rooAltFile, JSON.stringify(config, null, 2), 'utf-8');
+      // Also add to roo_mcp_settings.json for multi-version Roo compatibility
+      upsertMcpEntry(join(dirname(rooFile), 'roo_mcp_settings.json'), mcpServerConfig);
 
       results.push(chalk.green('  ✅ Roo Code') + chalk.dim(` (${rooFile})`));
     } catch (err) {
@@ -423,20 +533,8 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   // 7. Continue.dev (~/.continue/config.json)
   if (targetClient === 'continue' || targetClient === 'continue-dev' || targetClient === 'continuedev' || (targetClient === 'all' && detected.continueDev)) {
     try {
-      const contDir = join(os.homedir(), '.continue');
-      if (!existsSync(contDir)) mkdirSync(contDir, { recursive: true });
-      const contJson = join(contDir, 'config.json');
-      let config: any = {};
-      if (existsSync(contJson)) {
-        try {
-          config = JSON.parse(readFileSync(contJson, 'utf-8'));
-        } catch {
-          config = {};
-        }
-      }
-      if (!config.mcpServers) config.mcpServers = {};
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-      writeFileSync(contJson, JSON.stringify(config, null, 2), 'utf-8');
+      const contJson = join(os.homedir(), '.continue', 'config.json');
+      upsertMcpEntry(contJson, mcpServerConfig);
       results.push(chalk.green('  ✅ Continue.dev') + chalk.dim(` (${contJson})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Continue.dev: ') + (err as Error).message);
@@ -446,23 +544,8 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   // 8. Windsurf Configuration (~/.codeium/windsurf/mcp_config.json)
   if (targetClient === 'windsurf' || targetClient === 'codeium' || (targetClient === 'all' && detected.windsurf)) {
     try {
-      const windsurfDir = join(os.homedir(), '.codeium', 'windsurf');
-      const windsurfConfigFile = join(windsurfDir, 'mcp_config.json');
-
-      if (!existsSync(windsurfDir)) mkdirSync(windsurfDir, { recursive: true });
-      let config: any = { mcpServers: {} };
-      if (existsSync(windsurfConfigFile)) {
-        try {
-          config = JSON.parse(readFileSync(windsurfConfigFile, 'utf-8'));
-          if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-          config = { mcpServers: {} };
-        }
-      }
-
-      config.mcpServers['migration-guardian'] = mcpServerConfig;
-
-      writeFileSync(windsurfConfigFile, JSON.stringify(config, null, 2), 'utf-8');
+      const windsurfConfigFile = join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
+      upsertMcpEntry(windsurfConfigFile, mcpServerConfig);
       results.push(chalk.green('  ✅ Windsurf') + chalk.dim(` (${windsurfConfigFile})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Windsurf: ') + (err as Error).message);
@@ -473,24 +556,12 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   if (targetClient === 'zed' || (targetClient === 'all' && detected.zed)) {
     try {
       const zedFile = getZedSettingsPath();
-      const zedDir = dirname(zedFile);
-      if (!existsSync(zedDir)) mkdirSync(zedDir, { recursive: true });
-      let config: any = {};
-      if (existsSync(zedFile)) {
-        try {
-          config = JSON.parse(readFileSync(zedFile, 'utf-8'));
-        } catch {
-          config = {};
-        }
-      }
-      if (!config.context_servers) config.context_servers = {};
-      config.context_servers['migration-guardian'] = {
+      upsertMcpEntry(zedFile, {
         command: {
           path: 'npx',
           args: ['-y', 'mgcheck', 'mcp'],
         },
-      };
-      writeFileSync(zedFile, JSON.stringify(config, null, 2), 'utf-8');
+      }, 'context_servers');
       results.push(chalk.green('  ✅ Zed Editor') + chalk.dim(` (${zedFile})`));
     } catch (err) {
       results.push(chalk.yellow('  ⚠️  Zed Editor: ') + (err as Error).message);
@@ -504,9 +575,10 @@ export function setupMcp(options: SetupOptions = {}): string[] {
       const gooseDir = dirname(gooseFile);
       if (!existsSync(gooseDir)) mkdirSync(gooseDir, { recursive: true });
       const yamlContent = existsSync(gooseFile) ? readFileSync(gooseFile, 'utf-8') : '';
-      if (!yamlContent.includes('migration-guardian')) {
-        const gooseSnippet = `\nextensions:\n  migration-guardian:\n    name: migration-guardian\n    cmd: npx\n    args:\n      - -y\n      - mgcheck\n      - mcp\n    type: stdio\n    enabled: true\n`;
-        writeFileSync(gooseFile, (yamlContent + gooseSnippet).trimStart(), 'utf-8');
+      if (!yamlContent.includes(MCP_KEY)) {
+        const updated = addGooseExtension(yamlContent);
+        backupOnce(gooseFile);
+        writeFileSync(gooseFile, updated, 'utf-8');
         results.push(chalk.green('  ✅ Goose') + chalk.dim(` (${gooseFile})`));
       } else {
         results.push(chalk.green('  ✅ Goose') + chalk.dim(` (already configured in ${gooseFile})`));
@@ -521,9 +593,14 @@ export function setupMcp(options: SetupOptions = {}): string[] {
     try {
       const aiderFile = join(os.homedir(), '.aider.conf.yml');
       const aiderContent = existsSync(aiderFile) ? readFileSync(aiderFile, 'utf-8') : '';
-      if (!aiderContent.includes('mgcheck')) {
-        const snippet = `\n# Migration Guardian Safety Linter\nlint-cmd: "npx mgcheck analyze"\n`;
-        writeFileSync(aiderFile, (aiderContent + snippet).trimStart(), 'utf-8');
+      const alreadyConfigured = aiderContent.includes('npx mgcheck analyze');
+      if (/^lint-cmd:/m.test(aiderContent) && !alreadyConfigured) {
+        results.push(chalk.yellow('  ⚠️  Aider: ') + `${aiderFile} already defines lint-cmd; add "npx mgcheck analyze" manually.`);
+      } else if (!alreadyConfigured) {
+        const snippet = `${BLOCK_START}\n# Migration Guardian Safety Linter\nlint-cmd: "npx mgcheck analyze"\n${BLOCK_END}\n`;
+        const base = aiderContent.trimEnd();
+        backupOnce(aiderFile);
+        writeFileSync(aiderFile, base ? `${base}\n\n${snippet}` : snippet, 'utf-8');
         results.push(chalk.green('  ✅ Aider') + chalk.dim(` (${aiderFile})`));
       } else {
         results.push(chalk.green('  ✅ Aider') + chalk.dim(` (already configured in ${aiderFile})`));
@@ -613,6 +690,37 @@ export function ensureGitIgnore(workspaceDir: string = process.cwd()): { updated
   }
 }
 
+/** Command the pre-commit hook runs; also what Husky/Lefthook users add to their own hook. */
+export const HOOK_COMMAND = 'npx --yes mgcheck hook run';
+
+function git(args: string, cwd: string): string {
+  return execSync(`git ${args}`, { cwd, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 * 1024 * 1024 }).toString();
+}
+
+/**
+ * Returns core.hooksPath if set (Husky, Lefthook, etc.). When it is set, Git
+ * never runs scripts in .git/hooks.
+ */
+export function getHooksPath(workspaceDir: string = process.cwd()): string | null {
+  try {
+    return git('config --get core.hooksPath', workspaceDir).trim() || null;
+  } catch {
+    return null; // unset (git exits 1) or git unavailable
+  }
+}
+
+/**
+ * Absolute paths of staged (added/copied/modified) .sql files in the repo.
+ */
+export function getStagedMigrations(workspaceDir: string = process.cwd()): string[] {
+  const root = git('rev-parse --show-toplevel', workspaceDir).trim();
+  return git('diff --cached --name-only --diff-filter=ACM -z', workspaceDir)
+    .split('\0')
+    .filter((f) => f.toLowerCase().endsWith('.sql'))
+    .map((f) => join(root, f))
+    .filter((f) => existsSync(f));
+}
+
 /**
  * Installs Git pre-commit safety hook in workspace if .git directory exists.
  */
@@ -623,34 +731,39 @@ export function installGitHook(workspaceDir: string = process.cwd()): string | n
       return null;
     }
 
+    const hooksPath = getHooksPath(workspaceDir);
+    if (hooksPath) {
+      return chalk.yellow('  ⚠️  Git Hook not installed: ') +
+        `this repo sets core.hooksPath (${hooksPath}), e.g. Husky or Lefthook, so Git ignores .git/hooks.\n` +
+        chalk.white('     Add this line to your pre-commit hook instead:  ') + chalk.cyan(HOOK_COMMAND);
+    }
+
     const hooksDir = join(gitDir, 'hooks');
     if (!existsSync(hooksDir)) {
       mkdirSync(hooksDir, { recursive: true });
     }
 
     const hookFile = join(hooksDir, 'pre-commit');
+    const backupHook = join(hooksDir, 'pre-commit.mgcheck-backup');
+
+    // Preserve an existing user hook; ours chains to it and uninstall restores it
+    if (existsSync(hookFile) && !readFileSync(hookFile, 'utf-8').includes('Migration Guardian') && !existsSync(backupHook)) {
+      renameSync(hookFile, backupHook);
+    }
+
     const hookScript = `#!/bin/sh
 # Migration Guardian Git Pre-Commit Safety Hook
-# Automatically blocks commits containing unsafe database migrations.
+# Blocks commits whose staged .sql migrations break a blocking safety rule.
 
-STAGED_MIGRATIONS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\\.(sql)$')
+# Skip the npx startup entirely when no SQL is staged
+if git diff --cached --name-only --diff-filter=ACM | grep -qiE '\\.sql$'; then
+  ${HOOK_COMMAND} || exit $?
+fi
 
-if [ -n "$STAGED_MIGRATIONS" ]; then
-  echo "🛡️  Migration Guardian: Checking staged migrations for safety..."
-  for file in $STAGED_MIGRATIONS; do
-    if [ -f "$file" ]; then
-      npx mgcheck run "$file" --provider pglite --ci
-      EXIT_CODE=$?
-      if [ $EXIT_CODE -ne 0 ]; then
-        echo ""
-        echo "❌ Migration Guardian: Commit rejected! Unsafe database migration detected in $file."
-        echo "💡 Run 'npx mgcheck analyze $file' to see safe rewrite recommendations."
-        echo ""
-        exit $EXIT_CODE
-      fi
-    fi
-  done
-  echo "✅ Migration Guardian: All staged migrations verified safe."
+# Run the repository's original pre-commit hook, if one existed before install
+ORIGINAL_HOOK="$(dirname "$0")/pre-commit.mgcheck-backup"
+if [ -f "$ORIGINAL_HOOK" ]; then
+  sh "$ORIGINAL_HOOK" "$@" || exit $?
 fi
 exit 0
 `;
@@ -680,6 +793,11 @@ export function uninstallGitHook(workspaceDir: string = process.cwd()): string |
     const content = readFileSync(hookFile, 'utf-8');
     if (content.includes('Migration Guardian')) {
       rmSync(hookFile, { force: true });
+      const backupHook = join(gitDir, 'hooks', 'pre-commit.mgcheck-backup');
+      if (existsSync(backupHook)) {
+        renameSync(backupHook, hookFile);
+        return chalk.green('  🗑️  Removed Git Pre-Commit Hook (restored your original hook)') + chalk.dim(` (${hookFile})`);
+      }
       return chalk.green('  🗑️  Removed Git Pre-Commit Hook') + chalk.dim(` (${hookFile})`);
     }
 
@@ -690,6 +808,7 @@ export function uninstallGitHook(workspaceDir: string = process.cwd()): string |
 }
 
 const GUARDIAN_RULE_BANNER = '<!-- MIGRATION GUARDIAN SAFETY RULES -->';
+const GUARDIAN_RULE_END = '<!-- /MIGRATION GUARDIAN SAFETY RULES -->';
 const GUARDIAN_RULE_CONTENT = `${GUARDIAN_RULE_BANNER}
 ## Database Migration Safety (Enforced by Migration Guardian)
 
@@ -699,6 +818,7 @@ When creating, modifying, or executing database migrations (SQL, Prisma, Drizzle
    - **Step 1 (Verify)**: Call \`check_migration\` (or \`analyze_migration\`) to test against the disposable shadow DB and AST safety rules.
    - **Step 2 (Prompt User)**: Once verified safe (0 blocking errors), ask the human user: *"Migration verified safe (0 errors). Would you like me to apply it to your database now?"*.
    - **Step 3 (Apply)**: When the user confirms "yes", call \`apply_migration\` with \`confirm_user_approved: true\` to execute the migration against their target database!
+   - Always pass \`project_dir\` (the absolute path of the current workspace root) so the audit log is written to that project's \`.mgcheck/audit.jsonl\`.
 3. **Follow Zero-Downtime Migration Standards**:
    - \`MG001\`: Always use \`CREATE INDEX CONCURRENTLY\` instead of blocking indexes.
    - \`MG002\`: Never use \`ALTER COLUMN TYPE\` directly (use expand/contract pattern).
@@ -707,7 +827,20 @@ When creating, modifying, or executing database migrations (SQL, Prisma, Drizzle
    - \`MG005\` / \`MG006\`: Never drop columns or tables without explicit user confirmation.
    - \`MG009\`: Always set \`SET lock_timeout = '5s';\` before risky DDL.
    - \`MG010\`: Provide a rollback / down migration file whenever applicable.
+${GUARDIAN_RULE_END}
 `;
+
+/** Workspace rule files that `setup --with-rules` writes to. */
+function getAgentRuleFiles(workspaceDir: string): { path: string; name: string; ownedFile?: boolean }[] {
+  return [
+    { path: join(workspaceDir, '.cursor', 'rules', 'migration-guardian.mdc'), name: 'Cursor Rule (.cursor/rules)', ownedFile: true },
+    { path: join(workspaceDir, '.cursorrules'), name: 'Cursor Rules (.cursorrules)' },
+    { path: join(workspaceDir, 'CLAUDE.md'), name: 'Claude Rules (CLAUDE.md)' },
+    { path: join(workspaceDir, 'AGENTS.md'), name: 'Agent Rules (AGENTS.md)' },
+    { path: join(workspaceDir, '.windsurfrules'), name: 'Windsurf Rules (.windsurfrules)' },
+    { path: join(workspaceDir, '.github', 'copilot-instructions.md'), name: 'GitHub Copilot Instructions' },
+  ];
+}
 
 /**
  * Append or create AI agent rule files (.cursorrules, CLAUDE.md, AGENTS.md, etc.)
@@ -740,185 +873,151 @@ function appendOrWriteRule(filePath: string, name: string): string | null {
  */
 export function injectAgentRules(workspaceDir: string = process.cwd()): string[] {
   const results: string[] = [];
-
-  // 1. Cursor IDE Rules (.cursor/rules/migration-guardian.mdc and .cursorrules)
-  const cursorRuleFile = join(workspaceDir, '.cursor', 'rules', 'migration-guardian.mdc');
-  const resCursorMdc = appendOrWriteRule(cursorRuleFile, 'Cursor Rule (.cursor/rules)');
-  if (resCursorMdc) results.push(resCursorMdc);
-
-  const cursorRulesLegacy = join(workspaceDir, '.cursorrules');
-  const resCursorLegacy = appendOrWriteRule(cursorRulesLegacy, 'Cursor Rules (.cursorrules)');
-  if (resCursorLegacy) results.push(resCursorLegacy);
-
-  // 2. Claude Code / Claude Desktop Rules (CLAUDE.md)
-  const claudeMd = join(workspaceDir, 'CLAUDE.md');
-  const resClaude = appendOrWriteRule(claudeMd, 'Claude Rules (CLAUDE.md)');
-  if (resClaude) results.push(resClaude);
-
-  // 3. Antigravity & General Agent Rules (AGENTS.md)
-  const agentsMd = join(workspaceDir, 'AGENTS.md');
-  const resAgents = appendOrWriteRule(agentsMd, 'Agent Rules (AGENTS.md)');
-  if (resAgents) results.push(resAgents);
-
-  // 4. Windsurf Rules (.windsurfrules)
-  const windsurfRules = join(workspaceDir, '.windsurfrules');
-  const resWindsurf = appendOrWriteRule(windsurfRules, 'Windsurf Rules (.windsurfrules)');
-  if (resWindsurf) results.push(resWindsurf);
-
-  // 5. GitHub Copilot Instructions (.github/copilot-instructions.md)
-  const copilotInstructions = join(workspaceDir, '.github', 'copilot-instructions.md');
-  const resCopilot = appendOrWriteRule(copilotInstructions, 'GitHub Copilot Instructions');
-  if (resCopilot) results.push(resCopilot);
-
+  for (const { path, name } of getAgentRuleFiles(workspaceDir)) {
+    const res = appendOrWriteRule(path, name);
+    if (res) results.push(res);
+  }
   return results;
+}
+
+/**
+ * Remove the Migration Guardian rules block from text. Uses the end marker when
+ * present; older installs had no end marker, so cut through the last rule line (MG010).
+ */
+export function stripGuardianRules(content: string): string {
+  const start = content.indexOf(GUARDIAN_RULE_BANNER);
+  if (start === -1) return content;
+
+  let end = content.indexOf(GUARDIAN_RULE_END, start);
+  if (end !== -1) {
+    end += GUARDIAN_RULE_END.length;
+  } else {
+    const lastRule = content.indexOf('`MG010`', start);
+    if (lastRule === -1) return content;
+    const eol = content.indexOf('\n', lastRule);
+    end = eol === -1 ? content.length : eol;
+  }
+
+  const before = content.slice(0, start).trimEnd();
+  const after = content.slice(end).replace(/^\s*\n/, '').trimEnd();
+  return [before, after].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Removes injected Migration Guardian rule blocks from workspace AI rule files.
+ * Files that contained nothing but our rules are deleted.
+ */
+export function removeAgentRules(workspaceDir: string = process.cwd()): string[] {
+  const results: string[] = [];
+  for (const { path, name, ownedFile } of getAgentRuleFiles(workspaceDir)) {
+    if (!existsSync(path)) continue;
+    try {
+      const content = readFileSync(path, 'utf-8');
+      if (!content.includes(GUARDIAN_RULE_BANNER)) continue;
+      const remaining = stripGuardianRules(content);
+      if (ownedFile || !remaining.trim()) {
+        rmSync(path, { force: true });
+        results.push(chalk.green(`  🗑️  Removed ${name}`) + chalk.dim(` (${path})`));
+      } else {
+        writeFileSync(path, remaining + '\n', 'utf-8');
+        results.push(chalk.green(`  🗑️  Removed rules from ${name}`) + chalk.dim(` (${path})`));
+      }
+    } catch (err) {
+      results.push(chalk.yellow(`  ⚠️  ${name}: `) + (err as Error).message);
+    }
+  }
+  return results;
+}
+
+export interface ConnectionLocation {
+  name: string;
+  file: string;
+}
+
+function jsonHasEntry(file: string, key = 'mcpServers'): boolean {
+  try {
+    return Boolean(readJsonConfig(file)?.[key]?.[MCP_KEY]);
+  } catch {
+    return false;
+  }
+}
+
+function textHas(file: string, needle: string): boolean {
+  try {
+    return existsSync(file) && readFileSync(file, 'utf-8').includes(needle);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * List every config file that still registers Migration Guardian.
+ */
+export function findConnections(workspaceDir: string = process.cwd()): ConnectionLocation[] {
+  const home = os.homedir();
+  const found: ConnectionLocation[] = [];
+  const add = (name: string, file: string, present: boolean) => {
+    if (present) found.push({ name, file });
+  };
+
+  const antigravity = join(home, '.gemini', 'config', 'mcp_config.json');
+  add('Google Antigravity', antigravity, jsonHasEntry(antigravity));
+
+  const cursorGlobal = join(home, '.cursor', 'mcp.json');
+  add('Cursor IDE', cursorGlobal, jsonHasEntry(cursorGlobal));
+  const cursorWorkspace = join(workspaceDir, '.cursor', 'mcp.json');
+  add('Cursor IDE (Workspace)', cursorWorkspace, jsonHasEntry(cursorWorkspace));
+
+  const claudeDesktop = getClaudeDesktopConfigPath();
+  add('Claude Desktop', claudeDesktop, jsonHasEntry(claudeDesktop));
+
+  const claudeCode = join(home, '.claude.json');
+  let claudeCodePresent = false;
+  try {
+    const cfg = readJsonConfig(claudeCode);
+    claudeCodePresent = Boolean(cfg.mcpServers?.[MCP_KEY]) ||
+      Object.values(cfg.projects || {}).some((p: any) => p?.mcpServers?.[MCP_KEY]);
+  } catch { /* skip */ }
+  add('Claude Code CLI', claudeCode, claudeCodePresent);
+  const claudeProjectMcp = join(workspaceDir, '.mcp.json');
+  add('Claude Code (Project .mcp.json)', claudeProjectMcp, jsonHasEntry(claudeProjectMcp));
+
+  const cline = getClineMcpPath();
+  add('Cline (VS Code)', cline, jsonHasEntry(cline));
+
+  const roo = getRooMcpPath();
+  add('Roo Code (VS Code)', roo, jsonHasEntry(roo));
+  const rooAlt = join(dirname(roo), 'roo_mcp_settings.json');
+  add('Roo Code (Alternate)', rooAlt, jsonHasEntry(rooAlt));
+
+  const cont = join(home, '.continue', 'config.json');
+  add('Continue.dev', cont, jsonHasEntry(cont));
+
+  const windsurf = join(home, '.codeium', 'windsurf', 'mcp_config.json');
+  add('Windsurf', windsurf, jsonHasEntry(windsurf));
+
+  const zed = getZedSettingsPath();
+  add('Zed Editor', zed, jsonHasEntry(zed, 'context_servers'));
+
+  const goose = getGooseConfigPath();
+  add('Goose (Block)', goose, textHas(goose, MCP_KEY));
+
+  const aider = join(home, '.aider.conf.yml');
+  add('Aider', aider, textHas(aider, 'npx mgcheck analyze'));
+
+  const openhands = join(home, '.openhands', 'microagents', 'migration-guardian.md');
+  add('OpenHands', openhands, existsSync(openhands));
+
+  return found;
 }
 
 /**
  * Verify that migration-guardian is present in each AI client's MCP config.
  * Returns human-readable status lines.
  */
-export function verifyConnections(): string[] {
-  const lines: string[] = [];
-
-  // 1. Antigravity
-  const antigravityConfig = join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
-  if (existsSync(antigravityConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(antigravityConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Google Antigravity'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 2. Cursor (check global ~/.cursor/mcp.json first, then workspace .cursor)
-  const cursorGlobal = join(os.homedir(), '.cursor', 'mcp.json');
-  const cursorWorkspace = join(process.cwd(), '.cursor', 'mcp.json');
-  const cursorConfig = existsSync(cursorGlobal) ? cursorGlobal : cursorWorkspace;
-  if (existsSync(cursorConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(cursorConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Cursor IDE'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 3. Claude Desktop
-  let claudeConfig = '';
-  if (process.platform === 'win32') {
-    claudeConfig = join(process.env.APPDATA || '', 'Claude', 'claude_desktop_config.json');
-  } else if (process.platform === 'darwin') {
-    claudeConfig = join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
-  } else {
-    claudeConfig = join(os.homedir(), '.config', 'Claude', 'claude_desktop_config.json');
-  }
-  if (existsSync(claudeConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(claudeConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Claude Desktop'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 4. Claude Code CLI
-  const claudeCodeConfig = join(os.homedir(), '.claude.json');
-  if (existsSync(claudeCodeConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(claudeCodeConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Claude Code CLI'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 5. Cline
-  const clineConfig = getClineMcpPath();
-  if (existsSync(clineConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(clineConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Cline (VS Code)'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 6. Roo Code
-  const rooConfig = getRooMcpPath();
-  if (existsSync(rooConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(rooConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Roo Code (VS Code)'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 7. Continue.dev
-  const contConfig = join(os.homedir(), '.continue', 'config.json');
-  if (existsSync(contConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(contConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Continue.dev'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 8. Windsurf
-  const windsurfConfig = join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
-  if (existsSync(windsurfConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(windsurfConfig, 'utf-8'));
-      if (cfg?.mcpServers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Windsurf'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 9. Zed Editor
-  const zedConfig = getZedSettingsPath();
-  if (existsSync(zedConfig)) {
-    try {
-      const cfg = JSON.parse(readFileSync(zedConfig, 'utf-8'));
-      if (cfg?.context_servers?.['migration-guardian']) {
-        lines.push(chalk.green('  ✅ Connected to Zed Editor'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 10. Goose
-  const gooseConfig = getGooseConfigPath();
-  if (existsSync(gooseConfig)) {
-    try {
-      const content = readFileSync(gooseConfig, 'utf-8');
-      if (content.includes('migration-guardian')) {
-        lines.push(chalk.green('  ✅ Connected to Goose (Block)'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 11. Aider
-  const aiderConfig = join(os.homedir(), '.aider.conf.yml');
-  if (existsSync(aiderConfig)) {
-    try {
-      const content = readFileSync(aiderConfig, 'utf-8');
-      if (content.includes('mgcheck')) {
-        lines.push(chalk.green('  ✅ Connected to Aider'));
-      }
-    } catch { /* skip */ }
-  }
-
-  // 12. OpenHands
-  const openhandsConfig = join(os.homedir(), '.openhands', 'microagents', 'migration-guardian.md');
-  if (existsSync(openhandsConfig)) {
-    lines.push(chalk.green('  ✅ Connected to OpenHands'));
-  }
-
-  return lines;
+export function verifyConnections(workspaceDir: string = process.cwd()): string[] {
+  return findConnections(workspaceDir).map((c) => chalk.green(`  ✅ Connected to ${c.name}`));
 }
-
 
 /**
  * Remove Migration Guardian MCP configuration and hooks from specified clients.
@@ -927,83 +1026,107 @@ export function uninstallMcp(options: SetupOptions = {}): string[] {
   const targetClient = (options.client || 'all').toLowerCase();
   const workspaceDir = options.workspaceDir || process.cwd();
   const results: string[] = [];
+  const is = (...names: string[]) => targetClient === 'all' || names.includes(targetClient);
 
-  // Helper to remove 'migration-guardian' key from JSON file
+  // Helper to remove the 'migration-guardian' key from a JSON/JSONC file
   const removeFromMcpJson = (filePath: string, clientName: string, key = 'mcpServers') => {
-    if (existsSync(filePath)) {
-      try {
-        const config = JSON.parse(readFileSync(filePath, 'utf-8'));
-        if (config[key] && config[key]['migration-guardian']) {
-          delete config[key]['migration-guardian'];
-          writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf-8');
-          results.push(chalk.green(`  🗑️  Removed from ${clientName}`) + chalk.dim(` (${filePath})`));
-        }
-      } catch (err) {
-        results.push(chalk.yellow(`  ⚠️  ${clientName}: `) + (err as Error).message);
+    if (!existsSync(filePath)) return;
+    try {
+      const config = readJsonConfig(filePath);
+      if (config[key]?.[MCP_KEY]) {
+        delete config[key][MCP_KEY];
+        writeJsonConfig(filePath, config);
+        results.push(chalk.green(`  🗑️  Removed from ${clientName}`) + chalk.dim(` (${filePath})`));
       }
+    } catch (err) {
+      results.push(chalk.yellow(`  ⚠️  ${clientName}: `) + (err as Error).message);
+    }
+  };
+
+  // Helper to rewrite a text config through a cleaning function
+  const cleanTextFile = (filePath: string, clientName: string, needle: string, clean: (content: string) => string) => {
+    if (!existsSync(filePath)) return;
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      if (!content.includes(needle)) return;
+      const cleaned = clean(content);
+      if (cleaned === content) return;
+      backupOnce(filePath);
+      writeFileSync(filePath, cleaned, 'utf-8');
+      results.push(chalk.green(`  🗑️  Removed from ${clientName}`) + chalk.dim(` (${filePath})`));
+    } catch (err) {
+      results.push(chalk.yellow(`  ⚠️  ${clientName}: `) + (err as Error).message);
     }
   };
 
   // 1. Google Antigravity
-  if (targetClient === 'all' || targetClient === 'antigravity' || targetClient === 'gemini') {
-    const p = join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
-    removeFromMcpJson(p, 'Google Antigravity');
+  if (is('antigravity', 'gemini')) {
+    removeFromMcpJson(join(os.homedir(), '.gemini', 'config', 'mcp_config.json'), 'Google Antigravity');
   }
 
   // 2. Cursor IDE
-  if (targetClient === 'all' || targetClient === 'cursor') {
-    const globalP = join(os.homedir(), '.cursor', 'mcp.json');
-    removeFromMcpJson(globalP, 'Cursor IDE (Global)');
-    const localP = join(workspaceDir, '.cursor', 'mcp.json');
-    removeFromMcpJson(localP, 'Cursor IDE (Workspace)');
+  if (is('cursor')) {
+    removeFromMcpJson(join(os.homedir(), '.cursor', 'mcp.json'), 'Cursor IDE (Global)');
+    removeFromMcpJson(join(workspaceDir, '.cursor', 'mcp.json'), 'Cursor IDE (Workspace)');
   }
 
   // 3. Claude Desktop
-  if (targetClient === 'all' || targetClient === 'claude' || targetClient === 'claude-desktop') {
-    let claudeDir = '';
-    if (process.platform === 'win32') {
-      claudeDir = join(process.env.APPDATA || '', 'Claude');
-    } else if (process.platform === 'darwin') {
-      claudeDir = join(os.homedir(), 'Library', 'Application Support', 'Claude');
-    } else {
-      claudeDir = join(os.homedir(), '.config', 'Claude');
-    }
-    const claudeP = join(claudeDir, 'claude_desktop_config.json');
-    removeFromMcpJson(claudeP, 'Claude Desktop');
+  if (is('claude', 'claude-desktop')) {
+    removeFromMcpJson(getClaudeDesktopConfigPath(), 'Claude Desktop');
   }
 
-  // 4. Claude Code CLI
-  if (targetClient === 'all' || targetClient === 'claude-code' || targetClient === 'claudecode') {
+  // 4. Claude Code CLI — user scope, every per-project (local) scope, and project .mcp.json
+  if (is('claude-code', 'claudecode')) {
     const p = join(os.homedir(), '.claude.json');
-    removeFromMcpJson(p, 'Claude Code CLI');
+    if (existsSync(p)) {
+      try {
+        const config = readJsonConfig(p);
+        let modified = false;
+        if (config.mcpServers?.[MCP_KEY]) {
+          delete config.mcpServers[MCP_KEY];
+          modified = true;
+        }
+        for (const project of Object.values(config.projects || {}) as any[]) {
+          if (project?.mcpServers?.[MCP_KEY]) {
+            delete project.mcpServers[MCP_KEY];
+            modified = true;
+          }
+        }
+        if (modified) {
+          writeJsonConfig(p, config);
+          results.push(chalk.green('  🗑️  Removed from Claude Code CLI') + chalk.dim(` (${p})`));
+        }
+      } catch (err) {
+        results.push(chalk.yellow('  ⚠️  Claude Code CLI: ') + (err as Error).message);
+      }
+    }
+    removeFromMcpJson(join(workspaceDir, '.mcp.json'), 'Claude Code (Project .mcp.json)');
   }
 
   // 5. Cline
-  if (targetClient === 'all' || targetClient === 'cline') {
-    const p = getClineMcpPath();
-    removeFromMcpJson(p, 'Cline');
+  if (is('cline')) {
+    removeFromMcpJson(getClineMcpPath(), 'Cline');
   }
 
   // 6. Roo Code
-  if (targetClient === 'all' || targetClient === 'roo' || targetClient === 'roo-code' || targetClient === 'roocode') {
+  if (is('roo', 'roo-code', 'roocode')) {
     const p = getRooMcpPath();
     removeFromMcpJson(p, 'Roo Code');
-    const altP = join(dirname(p), 'roo_mcp_settings.json');
-    removeFromMcpJson(altP, 'Roo Code (Alternate)');
+    removeFromMcpJson(join(dirname(p), 'roo_mcp_settings.json'), 'Roo Code (Alternate)');
   }
 
   // 7. Continue.dev
-  if (targetClient === 'all' || targetClient === 'continue' || targetClient === 'continue-dev' || targetClient === 'continuedev') {
+  if (is('continue', 'continue-dev', 'continuedev')) {
     const p = join(os.homedir(), '.continue', 'config.json');
     if (existsSync(p)) {
       try {
-        const config = JSON.parse(readFileSync(p, 'utf-8'));
+        const config = readJsonConfig(p);
         let modified = false;
-        if (config.mcpServers?.['migration-guardian']) {
-          delete config.mcpServers['migration-guardian'];
+        if (config.mcpServers?.[MCP_KEY]) {
+          delete config.mcpServers[MCP_KEY];
           modified = true;
         }
-        if (config.experimental?.modelContextProtocolServers && Array.isArray(config.experimental.modelContextProtocolServers)) {
+        if (Array.isArray(config.experimental?.modelContextProtocolServers)) {
           const originalLen = config.experimental.modelContextProtocolServers.length;
           config.experimental.modelContextProtocolServers = config.experimental.modelContextProtocolServers.filter(
             (s: any) => !s.transport?.args?.includes('mgcheck')
@@ -1013,7 +1136,7 @@ export function uninstallMcp(options: SetupOptions = {}): string[] {
           }
         }
         if (modified) {
-          writeFileSync(p, JSON.stringify(config, null, 2), 'utf-8');
+          writeJsonConfig(p, config);
           results.push(chalk.green('  🗑️  Removed from Continue.dev') + chalk.dim(` (${p})`));
         }
       } catch (err) {
@@ -1023,57 +1146,38 @@ export function uninstallMcp(options: SetupOptions = {}): string[] {
   }
 
   // 8. Windsurf
-  if (targetClient === 'all' || targetClient === 'windsurf' || targetClient === 'codeium') {
-    const p = join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
-    removeFromMcpJson(p, 'Windsurf');
+  if (is('windsurf', 'codeium')) {
+    removeFromMcpJson(join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'), 'Windsurf');
   }
 
   // 9. Zed Editor
-  if (targetClient === 'all' || targetClient === 'zed') {
-    const p = getZedSettingsPath();
-    removeFromMcpJson(p, 'Zed Editor', 'context_servers');
+  if (is('zed')) {
+    removeFromMcpJson(getZedSettingsPath(), 'Zed Editor', 'context_servers');
   }
 
   // 10. Goose
-  if (targetClient === 'all' || targetClient === 'goose') {
-    const p = getGooseConfigPath();
-    if (existsSync(p)) {
-      try {
-        const content = readFileSync(p, 'utf-8');
-        if (content.includes('migration-guardian')) {
-          const cleaned = content.replace(/extensions:\s*\n\s*migration-guardian:[\s\S]*?(?=\n\S|\n\n|$)/g, '')
-                                .replace(/\s*migration-guardian:[\s\S]*?(?=\n\S|\n\n|$)/g, '');
-          writeFileSync(p, cleaned.trim() + '\n', 'utf-8');
-          results.push(chalk.green('  🗑️  Removed from Goose') + chalk.dim(` (${p})`));
-        }
-      } catch (err) {
-        results.push(chalk.yellow('  ⚠️  Goose: ') + (err as Error).message);
-      }
-    }
+  if (is('goose')) {
+    cleanTextFile(getGooseConfigPath(), 'Goose', MCP_KEY, removeGooseExtension);
   }
 
-  // 11. Aider
-  if (targetClient === 'all' || targetClient === 'aider') {
-    const p = join(os.homedir(), '.aider.conf.yml');
-    if (existsSync(p)) {
-      try {
-        const content = readFileSync(p, 'utf-8');
-        if (content.includes('mgcheck')) {
-          const cleaned = content
-            .split('\n')
-            .filter((line) => !line.includes('mgcheck') && !line.includes('Migration Guardian'))
-            .join('\n');
-          writeFileSync(p, cleaned.trim() + '\n', 'utf-8');
-          results.push(chalk.green('  🗑️  Removed from Aider') + chalk.dim(` (${p})`));
-        }
-      } catch (err) {
-        results.push(chalk.yellow('  ⚠️  Aider: ') + (err as Error).message);
-      }
-    }
+  // 11. Aider — remove only our marked block (or the exact legacy lines)
+  if (is('aider')) {
+    cleanTextFile(join(os.homedir(), '.aider.conf.yml'), 'Aider', 'npx mgcheck analyze', (content) => {
+      const cleaned = removeMarkedBlock(content)
+        .split('\n')
+        .filter((line) => {
+          const t = line.trim();
+          return t !== '# Migration Guardian Safety Linter' && t !== 'lint-cmd: "npx mgcheck analyze"';
+        })
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      return cleaned ? cleaned + '\n' : '';
+    });
   }
 
   // 12. OpenHands
-  if (targetClient === 'all' || targetClient === 'openhands' || targetClient === 'opendevin') {
+  if (is('openhands', 'opendevin')) {
     const p = join(os.homedir(), '.openhands', 'microagents', 'migration-guardian.md');
     if (existsSync(p)) {
       try {
@@ -1085,12 +1189,72 @@ export function uninstallMcp(options: SetupOptions = {}): string[] {
     }
   }
 
-  // 13. Git Pre-Commit Hook
   if (targetClient === 'all') {
+    // 13. Git Pre-Commit Hook
     const hookResult = uninstallGitHook(workspaceDir);
     if (hookResult) results.push(hookResult);
+
+    // 14. Workspace AI rule files (CLAUDE.md, AGENTS.md, .cursorrules, ...)
+    results.push(...removeAgentRules(workspaceDir));
+
+    // 15. Central safety rules (~/.mgcheck/rules.md)
+    const rulesPath = join(os.homedir(), '.mgcheck', 'rules.md');
+    if (existsSync(rulesPath)) {
+      try {
+        rmSync(rulesPath, { force: true });
+        results.push(chalk.green('  🗑️  Removed Central Safety Rules') + chalk.dim(` (${rulesPath})`));
+      } catch (err) {
+        results.push(chalk.yellow('  ⚠️  Safety Rules: ') + (err as Error).message);
+      }
+    }
+
+    // 16. Audit logs & .gitignore entry (only with --purge)
+    if (options.purge) {
+      results.push(...purgeStorage(workspaceDir));
+    }
   }
 
+  return results;
+}
+
+/**
+ * Delete audit logs and IPC queues (~/.mgcheck and <project>/.mgcheck) and
+ * remove the .mgcheck/ entry that setup added to .gitignore.
+ */
+function purgeStorage(workspaceDir: string): string[] {
+  const results: string[] = [];
+  for (const dir of [join(os.homedir(), '.mgcheck'), join(workspaceDir, '.mgcheck')]) {
+    if (!existsSync(dir)) continue;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      results.push(chalk.green('  🗑️  Deleted audit logs') + chalk.dim(` (${dir})`));
+    } catch (err) {
+      results.push(chalk.yellow('  ⚠️  Audit logs: ') + (err as Error).message);
+    }
+  }
+
+  const gitignorePath = join(workspaceDir, '.gitignore');
+  if (existsSync(gitignorePath)) {
+    try {
+      const content = readFileSync(gitignorePath, 'utf-8');
+      const cleaned = content
+        .split('\n')
+        .filter((l) => {
+          const t = l.trim();
+          return t !== '# Migration Guardian audit logs & temporary approvals' &&
+            !['.mgcheck', '.mgcheck/', '/.mgcheck', '/.mgcheck/'].includes(t);
+        })
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trimEnd();
+      if (cleaned !== content.trimEnd()) {
+        writeFileSync(gitignorePath, cleaned ? cleaned + '\n' : '', 'utf-8');
+        results.push(chalk.green('  🗑️  Removed .mgcheck/ from .gitignore') + chalk.dim(` (${gitignorePath})`));
+      }
+    } catch (err) {
+      results.push(chalk.yellow('  ⚠️  .gitignore: ') + (err as Error).message);
+    }
+  }
   return results;
 }
 
