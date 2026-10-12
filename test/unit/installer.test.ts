@@ -17,6 +17,7 @@ import {
   getGooseConfigPath,
   getStagedMigrations,
   HOOK_COMMAND,
+  detectClients,
 } from '../../src/installer/index.js';
 import { execSync } from 'node:child_process';
 
@@ -212,6 +213,41 @@ describe('Installer / Uninstaller', () => {
       expect(staged).toHaveLength(2);
       expect(staged.some((f) => f.endsWith('db/my migration.sql'))).toBe(true);
       expect(staged.some((f) => f.endsWith('b.SQL'))).toBe(true);
+    });
+  });
+
+  describe('detectClients', () => {
+    const detectedNames = () => detectClients().clients.filter((c) => c.detected).map((c) => c.name);
+
+    it('does not count config folders that mgcheck setup itself created', () => {
+      // Earlier tests leave a user-authored Aider config behind, which is a real signal
+      rmSync(join(home(), '.aider.conf.yml'), { force: true });
+      for (const c of ['cursor', 'zed', 'goose', 'aider', 'openhands', 'continue', 'cline', 'windsurf', 'antigravity', 'claude']) {
+        setupMcp({ client: c, workspaceDir: workspace });
+      }
+      const fake = ['Google Antigravity', 'Cursor IDE', 'Claude Desktop', 'Cline (VS Code)', 'Continue.dev',
+        'Windsurf (Codeium)', 'Zed Editor', 'Goose (Block)', 'Aider', 'OpenHands'];
+      expect(detectedNames().filter((n) => fake.includes(n))).toEqual([]);
+    });
+
+    it('detects apps from files the app itself creates', () => {
+      mkdirSync(join(home(), '.cursor', 'extensions'), { recursive: true });
+      mkdirSync(join(home(), '.gemini', 'antigravity-ide'), { recursive: true });
+      write(join(home(), '.vscode', 'extensions', 'saoudrizwan.claude-dev-4.1.23', 'package.json'), '{}');
+      const names = detectedNames();
+      expect(names).toEqual(expect.arrayContaining(['Cursor IDE', 'Google Antigravity', 'Cline (VS Code)']));
+      rmSync(join(home(), '.cursor', 'extensions'), { recursive: true, force: true });
+      rmSync(join(home(), '.gemini', 'antigravity-ide'), { recursive: true, force: true });
+      rmSync(join(home(), '.vscode'), { recursive: true, force: true });
+    });
+
+    it('setup --client all only configures detected apps', () => {
+      setupMcp({ client: 'all', workspaceDir: workspace });
+      const connected = findConnections(workspace).map((c) => c.client);
+      const detected = detectClients();
+      for (const client of connected) {
+        expect(detected[client]).toBe(true);
+      }
     });
   });
 

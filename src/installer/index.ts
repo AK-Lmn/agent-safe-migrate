@@ -299,7 +299,38 @@ export function removeGooseExtension(yamlContent: string): string {
 }
 
 /**
+ * True when `dir` exists and contains something other than the files mgcheck
+ * itself writes there. Setup creates config folders (~/.cursor, ~/.continue, …),
+ * so a folder's mere existence must never count as "this app is installed".
+ */
+function hasForeignEntries(dir: string, ours: string[]): boolean {
+  try {
+    return readdirSync(dir).some((e) => !ours.includes(e) && !e.endsWith('.mgcheck.bak'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the Migration Guardian lint-cmd block (or its legacy unmarked lines) from Aider config text.
+ */
+function stripAiderBlock(content: string): string {
+  const cleaned = removeMarkedBlock(content)
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return t !== '# Migration Guardian Safety Linter' && t !== 'lint-cmd: "npx mgcheck analyze"';
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return cleaned ? cleaned + '\n' : '';
+}
+
+/**
  * Detect which AI editors/clients/agents are actually installed on the user's system.
+ * Only installation signals count (executables, extensions, PATH, or files the app
+ * itself writes) — never folders or files that mgcheck setup creates.
  */
 export function detectClients(): DetectResult {
   const home = os.homedir();
@@ -307,99 +338,107 @@ export function detectClients(): DetectResult {
   const programFiles = process.env.ProgramFiles || '';
   const appData = process.env.APPDATA || '';
 
-  // 1. Google Antigravity
+  // 1. Google Antigravity (setup only creates ~/.gemini/config)
   const geminiDir = join(home, '.gemini');
   const antigravity = Boolean(
     existsSync(join(geminiDir, 'antigravity-ide')) ||
-    existsSync(geminiDir) ||
+    existsSync(join(geminiDir, 'antigravity')) ||
     process.env.ANTIGRAVITY_APP_DIR ||
     process.env.ANTIGRAVITY_IDE
   );
 
-  // 2. Cursor IDE
+  // 2. Cursor IDE (setup only creates ~/.cursor/mcp.json)
+  const cursorHome = hasForeignEntries(join(home, '.cursor'), ['mcp.json']);
   let cursor = false;
   if (process.platform === 'win32') {
     cursor = existsSync(join(localAppData, 'Programs', 'cursor', 'Cursor.exe')) ||
              existsSync(join(programFiles, 'Cursor', 'Cursor.exe')) ||
-             existsSync(join(home, '.cursor'));
+             cursorHome;
   } else if (process.platform === 'darwin') {
     cursor = existsSync('/Applications/Cursor.app') ||
              existsSync(join(home, 'Applications', 'Cursor.app')) ||
-             existsSync(join(home, '.cursor'));
+             cursorHome;
   } else {
     cursor = existsSync('/opt/Cursor/cursor') ||
              existsSync(join(home, '.config', 'Cursor')) ||
-             existsSync(join(home, '.cursor'));
+             cursorHome;
   }
 
   // 3. Claude Desktop (GUI app)
+  const claudeDesktopDir = dirname(getClaudeDesktopConfigPath());
+  const claudeDesktopData = hasForeignEntries(claudeDesktopDir, ['claude_desktop_config.json']);
   let claude = false;
   if (process.platform === 'win32') {
     claude = existsSync(join(localAppData, 'Programs', 'claude', 'Claude.exe')) ||
              existsSync(join(localAppData, 'AnthropicClaude', 'Claude.exe')) ||
-             existsSync(join(appData, 'Claude'));
+             claudeDesktopData;
   } else if (process.platform === 'darwin') {
     claude = existsSync('/Applications/Claude.app') ||
              existsSync(join(home, 'Applications', 'Claude.app')) ||
-             existsSync(join(home, 'Library', 'Application Support', 'Claude'));
+             claudeDesktopData;
   } else {
-    const claudeConfig = join(home, '.config', 'Claude', 'claude_desktop_config.json');
-    claude = existsSync(claudeConfig) || existsSync(join(home, '.config', 'Claude'));
+    claude = claudeDesktopData;
   }
 
-  // 4. Claude Code CLI
-  const claudeCode = existsSync(join(home, '.claude.json')) ||
-                     existsSync(join(home, '.claude')) ||
+  // 4. Claude Code CLI (~/.claude is created by Claude Code itself)
+  const claudeCode = existsSync(join(home, '.claude')) ||
                      hasVsCodeExtension('anthropic.claude-code') ||
                      isOnPath('claude');
 
-  // 5. Cline (VS Code Autonomous Coding Agent)
-  const clineMcpPath = getClineMcpPath();
-  const cline = existsSync(dirname(clineMcpPath)) || hasVsCodeExtension('saoudrizwan.claude-dev');
+  // 5. Cline (VS Code extension; setup creates its settings folder)
+  const cline = hasVsCodeExtension('saoudrizwan.claude-dev');
 
-  // 6. Roo Code (VS Code Autonomous Agent)
-  const rooMcpPath = getRooMcpPath();
-  const rooCode = existsSync(dirname(rooMcpPath)) || hasVsCodeExtension('rooveterinaryinc.roo-cline');
+  // 6. Roo Code (VS Code extension)
+  const rooCode = hasVsCodeExtension('rooveterinaryinc.roo-cline');
 
-  // 7. Continue.dev (VS Code & JetBrains Agent)
-  const continueDev = existsSync(join(home, '.continue')) || hasVsCodeExtension('continue.continue');
+  // 7. Continue.dev (VS Code & JetBrains; setup only writes ~/.continue/config.json)
+  const continueDev = hasVsCodeExtension('continue.continue') ||
+                      hasForeignEntries(join(home, '.continue'), ['config.json']);
 
-  // 8. Windsurf (Codeium)
+  // 8. Windsurf (Codeium; setup only writes ~/.codeium/windsurf/mcp_config.json)
+  const windsurfHome = hasForeignEntries(join(home, '.codeium', 'windsurf'), ['mcp_config.json']);
   let windsurf = false;
   if (process.platform === 'win32') {
     windsurf = existsSync(join(localAppData, 'Programs', 'windsurf', 'Windsurf.exe')) ||
                existsSync(join(localAppData, 'Windsurf')) ||
-               existsSync(join(home, '.codeium', 'windsurf'));
+               windsurfHome;
   } else if (process.platform === 'darwin') {
     windsurf = existsSync('/Applications/Windsurf.app') ||
                existsSync(join(home, 'Applications', 'Windsurf.app')) ||
-               existsSync(join(home, '.codeium', 'windsurf'));
+               windsurfHome;
   } else {
-    windsurf = existsSync(join(home, '.config', 'Windsurf')) || existsSync(join(home, '.codeium', 'windsurf'));
+    windsurf = existsSync(join(home, '.config', 'Windsurf')) || windsurfHome;
   }
 
-  // 9. Zed Editor
+  // 9. Zed Editor (setup only writes settings.json)
   let zed = false;
   if (process.platform === 'win32') {
     zed = existsSync(join(localAppData, 'Programs', 'Zed', 'Zed.exe')) ||
-          existsSync(join(appData, 'Zed')) ||
-          existsSync(join(home, '.config', 'zed')) ||
+          hasForeignEntries(join(appData, 'Zed'), ['settings.json']) ||
           isOnPath('zed');
   } else if (process.platform === 'darwin') {
     zed = existsSync('/Applications/Zed.app') || existsSync(join(home, 'Applications', 'Zed.app')) || isOnPath('zed');
   } else {
-    zed = existsSync(join(home, '.config', 'zed')) || isOnPath('zed');
+    zed = hasForeignEntries(join(home, '.config', 'zed'), ['settings.json']) ||
+          existsSync(join(home, '.local', 'share', 'zed')) ||
+          isOnPath('zed');
   }
 
-  // 10. Goose (Block / Square Agent)
-  const gooseConfig = getGooseConfigPath();
-  const goose = existsSync(join(home, '.config', 'goose')) || existsSync(dirname(gooseConfig)) || isOnPath('goose');
+  // 10. Goose (Block / Square Agent; setup only writes config.yaml)
+  const goose = isOnPath('goose') || hasForeignEntries(dirname(getGooseConfigPath()), ['config.yaml']);
 
-  // 11. Aider (CLI Pair Programmer)
-  const aider = existsSync(join(home, '.aider.conf.yml')) || isOnPath('aider');
+  // 11. Aider (CLI Pair Programmer; a config holding only our lint-cmd doesn't count)
+  const aiderConf = join(home, '.aider.conf.yml');
+  let aiderConfigured = false;
+  try {
+    aiderConfigured = existsSync(aiderConf) && stripAiderBlock(readFileSync(aiderConf, 'utf-8')) !== '';
+  } catch { /* skip */ }
+  const aider = isOnPath('aider') || aiderConfigured;
 
-  // 12. OpenHands (Autonomous Software Engineer)
-  const openhands = existsSync(join(home, '.openhands')) || existsSync(join(process.cwd(), '.openhands')) || Boolean(process.env.OPENHANDS_WORKSPACE);
+  // 12. OpenHands (setup only creates ~/.openhands/microagents)
+  const openhands = hasForeignEntries(join(home, '.openhands'), ['microagents']) ||
+                    existsSync(join(process.cwd(), '.openhands')) ||
+                    Boolean(process.env.OPENHANDS_WORKSPACE);
 
   // 13. VS Code + GitHub Copilot
   const vscode = hasVsCodeExtension('github.copilot') || hasVsCodeExtension('github.copilot-chat');
@@ -456,7 +495,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   };
 
   // 1. Google Antigravity Configuration (~/.gemini/config/mcp_config.json)
-  if (targetClient === 'all' || targetClient === 'antigravity' || targetClient === 'gemini') {
+  if (targetClient === 'antigravity' || targetClient === 'gemini' || (targetClient === 'all' && detected.antigravity)) {
     try {
       const mcpConfigFile = join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
       upsertMcpEntry(mcpConfigFile, mcpServerConfig);
@@ -467,7 +506,7 @@ export function setupMcp(options: SetupOptions = {}): string[] {
   }
 
   // 2. Cursor Configuration (Global ~/.cursor/mcp.json — zero workspace clutter)
-  if (targetClient === 'all' || targetClient === 'cursor') {
+  if (targetClient === 'cursor' || (targetClient === 'all' && detected.cursor)) {
     try {
       const cursorFile = join(os.homedir(), '.cursor', 'mcp.json');
       upsertMcpEntry(cursorFile, mcpServerConfig);
@@ -929,9 +968,30 @@ export function removeAgentRules(workspaceDir: string = process.cwd()): string[]
   return results;
 }
 
+export type ClientKey =
+  | 'antigravity' | 'cursor' | 'claude' | 'claudeCode' | 'cline' | 'rooCode'
+  | 'continueDev' | 'windsurf' | 'zed' | 'goose' | 'aider' | 'openhands';
+
+/** `--client` value for each client, for setup/uninstall hints. */
+export const CLIENT_FLAGS: Record<ClientKey, string> = {
+  antigravity: 'antigravity',
+  cursor: 'cursor',
+  claude: 'claude',
+  claudeCode: 'claude-code',
+  cline: 'cline',
+  rooCode: 'roo',
+  continueDev: 'continue',
+  windsurf: 'windsurf',
+  zed: 'zed',
+  goose: 'goose',
+  aider: 'aider',
+  openhands: 'openhands',
+};
+
 export interface ConnectionLocation {
   name: string;
   file: string;
+  client: ClientKey;
 }
 
 function jsonHasEntry(file: string, key = 'mcpServers'): boolean {
@@ -956,20 +1016,20 @@ function textHas(file: string, needle: string): boolean {
 export function findConnections(workspaceDir: string = process.cwd()): ConnectionLocation[] {
   const home = os.homedir();
   const found: ConnectionLocation[] = [];
-  const add = (name: string, file: string, present: boolean) => {
-    if (present) found.push({ name, file });
+  const add = (name: string, file: string, present: boolean, client: ClientKey) => {
+    if (present) found.push({ name, file, client });
   };
 
   const antigravity = join(home, '.gemini', 'config', 'mcp_config.json');
-  add('Google Antigravity', antigravity, jsonHasEntry(antigravity));
+  add('Google Antigravity', antigravity, jsonHasEntry(antigravity), 'antigravity');
 
   const cursorGlobal = join(home, '.cursor', 'mcp.json');
-  add('Cursor IDE', cursorGlobal, jsonHasEntry(cursorGlobal));
+  add('Cursor IDE', cursorGlobal, jsonHasEntry(cursorGlobal), 'cursor');
   const cursorWorkspace = join(workspaceDir, '.cursor', 'mcp.json');
-  add('Cursor IDE (Workspace)', cursorWorkspace, jsonHasEntry(cursorWorkspace));
+  add('Cursor IDE (Workspace)', cursorWorkspace, jsonHasEntry(cursorWorkspace), 'cursor');
 
   const claudeDesktop = getClaudeDesktopConfigPath();
-  add('Claude Desktop', claudeDesktop, jsonHasEntry(claudeDesktop));
+  add('Claude Desktop', claudeDesktop, jsonHasEntry(claudeDesktop), 'claude');
 
   const claudeCode = join(home, '.claude.json');
   let claudeCodePresent = false;
@@ -978,35 +1038,35 @@ export function findConnections(workspaceDir: string = process.cwd()): Connectio
     claudeCodePresent = Boolean(cfg.mcpServers?.[MCP_KEY]) ||
       Object.values(cfg.projects || {}).some((p: any) => p?.mcpServers?.[MCP_KEY]);
   } catch { /* skip */ }
-  add('Claude Code CLI', claudeCode, claudeCodePresent);
+  add('Claude Code CLI', claudeCode, claudeCodePresent, 'claudeCode');
   const claudeProjectMcp = join(workspaceDir, '.mcp.json');
-  add('Claude Code (Project .mcp.json)', claudeProjectMcp, jsonHasEntry(claudeProjectMcp));
+  add('Claude Code (Project .mcp.json)', claudeProjectMcp, jsonHasEntry(claudeProjectMcp), 'claudeCode');
 
   const cline = getClineMcpPath();
-  add('Cline (VS Code)', cline, jsonHasEntry(cline));
+  add('Cline (VS Code)', cline, jsonHasEntry(cline), 'cline');
 
   const roo = getRooMcpPath();
-  add('Roo Code (VS Code)', roo, jsonHasEntry(roo));
+  add('Roo Code (VS Code)', roo, jsonHasEntry(roo), 'rooCode');
   const rooAlt = join(dirname(roo), 'roo_mcp_settings.json');
-  add('Roo Code (Alternate)', rooAlt, jsonHasEntry(rooAlt));
+  add('Roo Code (Alternate)', rooAlt, jsonHasEntry(rooAlt), 'rooCode');
 
   const cont = join(home, '.continue', 'config.json');
-  add('Continue.dev', cont, jsonHasEntry(cont));
+  add('Continue.dev', cont, jsonHasEntry(cont), 'continueDev');
 
   const windsurf = join(home, '.codeium', 'windsurf', 'mcp_config.json');
-  add('Windsurf', windsurf, jsonHasEntry(windsurf));
+  add('Windsurf', windsurf, jsonHasEntry(windsurf), 'windsurf');
 
   const zed = getZedSettingsPath();
-  add('Zed Editor', zed, jsonHasEntry(zed, 'context_servers'));
+  add('Zed Editor', zed, jsonHasEntry(zed, 'context_servers'), 'zed');
 
   const goose = getGooseConfigPath();
-  add('Goose (Block)', goose, textHas(goose, MCP_KEY));
+  add('Goose (Block)', goose, textHas(goose, MCP_KEY), 'goose');
 
   const aider = join(home, '.aider.conf.yml');
-  add('Aider', aider, textHas(aider, 'npx mgcheck analyze'));
+  add('Aider', aider, textHas(aider, 'npx mgcheck analyze'), 'aider');
 
   const openhands = join(home, '.openhands', 'microagents', 'migration-guardian.md');
-  add('OpenHands', openhands, existsSync(openhands));
+  add('OpenHands', openhands, existsSync(openhands), 'openhands');
 
   return found;
 }
@@ -1162,18 +1222,7 @@ export function uninstallMcp(options: SetupOptions = {}): string[] {
 
   // 11. Aider — remove only our marked block (or the exact legacy lines)
   if (is('aider')) {
-    cleanTextFile(join(os.homedir(), '.aider.conf.yml'), 'Aider', 'npx mgcheck analyze', (content) => {
-      const cleaned = removeMarkedBlock(content)
-        .split('\n')
-        .filter((line) => {
-          const t = line.trim();
-          return t !== '# Migration Guardian Safety Linter' && t !== 'lint-cmd: "npx mgcheck analyze"';
-        })
-        .join('\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-      return cleaned ? cleaned + '\n' : '';
-    });
+    cleanTextFile(join(os.homedir(), '.aider.conf.yml'), 'Aider', 'npx mgcheck analyze', stripAiderBlock);
   }
 
   // 12. OpenHands

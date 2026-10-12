@@ -233,3 +233,63 @@ describe('MCP tool storage routing', () => {
     expect(entries.map((e) => e.decision)).toEqual(['user_approved']);
   });
 });
+
+describe('Live event feed', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mgcheck-events-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const entry = (id: string): AuditEntry => ({
+    id,
+    timestamp: new Date().toISOString(),
+    tool: 'cli:analyze',
+    risk: 'high',
+    decision: 'blocked',
+    query: 'DROP TABLE customers;',
+    violations: [],
+    errorCount: 1,
+    warningCount: 0,
+  });
+
+  it('delivers only events published after watching starts, across truncation', async () => {
+    const { publishEvent, watchEvents } = await import('../../src/core/activity-log.js');
+    publishEvent(entry('old'), dir);
+
+    const seen: string[] = [];
+    const stop = watchEvents((e) => seen.push(e.id), dir);
+    publishEvent(entry('new-1'), dir);
+    await new Promise((r) => setTimeout(r, 700));
+
+    writeFileSync(join(dir, 'events.jsonl'), '', 'utf-8'); // simulate rotation
+    await new Promise((r) => setTimeout(r, 700));
+    publishEvent(entry('new-2'), dir);
+    await new Promise((r) => setTimeout(r, 700));
+    stop();
+
+    expect(seen).toEqual(['new-1', 'new-2']);
+  });
+
+  it('publishes auto-blocked MCP calls to the global feed', async () => {
+    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+    const { runMcpTools } = await import('../../src/mcp/tools.js');
+    const { getGlobalLogDir } = await import('../../src/core/activity-log.js');
+    const server = new McpServer({ name: 'test-server', version: '1.0.0' });
+    runMcpTools(server);
+
+    writeFileSync(join(dir, 'package.json'), '{}', 'utf-8');
+    await (server as any)._registeredTools['analyze_migration'].handler({
+      migration_sql: 'DROP TABLE customers;',
+      project_dir: dir,
+    });
+
+    const feed = readFileSync(join(getGlobalLogDir(), 'events.jsonl'), 'utf-8').trim().split('\n');
+    const last = JSON.parse(feed[feed.length - 1]);
+    expect(last.decision).toBe('blocked');
+    expect(last.query).toBe('DROP TABLE customers;');
+    expect(last.project).toBe(dir);
+  });
+});

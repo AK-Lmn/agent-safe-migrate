@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import { loadConfig } from './core/config.js';
 import { runCheck } from './core/engine.js';
 import { renderReport, getExitCode } from './reporter/index.js';
-import type { MgcheckConfig, OutputFormat, ShadowProvider } from './core/types.js';
+import type { MgcheckConfig, MigrationReport, OutputFormat, ShadowProvider } from './core/types.js';
 import { VERSION } from './version.js';
 
 const program = new Command();
@@ -77,6 +77,8 @@ program
         }
       }
 
+      if (!options.ci) await recordCliCheck('cli:run', report);
+
       const output = renderReport(report, format);
       console.log(output);
 
@@ -142,6 +144,8 @@ program
           report = await runCheck(inputPath, config, 'analyze');
         }
       }
+
+      if (!options.ci) await recordCliCheck('cli:analyze', report);
 
       const output = renderReport(report, format);
       console.log(output);
@@ -305,6 +309,7 @@ async function runStagedMigrationCheck(): Promise<number> {
     const name = relative(process.cwd(), file);
     try {
       const report = await runCheck(file, config, 'analyze');
+      await recordCliCheck('git-hook', report);
       if (!report.passed) {
         rejected.push(name);
         console.log(renderReport(report, 'terminal'));
@@ -412,6 +417,39 @@ program
   });
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+/**
+ * Log a CLI check to the project audit log and publish it to the live feed
+ * shown by the `mgcheck setup` watcher. Never throws.
+ */
+async function recordCliCheck(tool: string, report: MigrationReport): Promise<void> {
+  try {
+    const { writeAuditEntry, publishEvent, generateAuditId, findProjectRoot } = await import('./core/activity-log.js');
+    const { classifyRisk } = await import('./core/risk-classifier.js');
+    const risk = classifyRisk(report.violations);
+    const entry = {
+      id: generateAuditId(),
+      timestamp: new Date().toISOString(),
+      tool,
+      project: findProjectRoot() ?? process.cwd(),
+      risk: risk.level,
+      decision: report.passed ? 'auto_allowed' as const : 'blocked' as const,
+      query: report.migration.files.map((f) => f.sql).join('\n'),
+      violations: report.violations.map((v) => ({
+        ruleId: v.ruleId,
+        severity: v.severity,
+        message: v.message,
+        line: v.line,
+      })),
+      errorCount: risk.errorCount,
+      warningCount: risk.warningCount,
+    };
+    writeAuditEntry(entry);
+    publishEvent(entry);
+  } catch {
+    // Logging must never change the outcome of a check
+  }
+}
 
 function buildConfig(options: any): MgcheckConfig {
   const overrides: Partial<MgcheckConfig> = {

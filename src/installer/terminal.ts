@@ -2,7 +2,7 @@ import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { SetupOptions } from './index.js';
-import { detectClients, setupMcp, verifyConnections, uninstallMcp, findConnections } from './index.js';
+import { detectClients, setupMcp, uninstallMcp, findConnections, CLIENT_FLAGS } from './index.js';
 
 /**
  * Interactive Wizard: Auto-detects clients, prompts the user, and connects.
@@ -22,7 +22,8 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     }
     console.log('');
   } else {
-    console.log(chalk.dim('  No AI editors detected. Configuring MCP integration anyway...\n'));
+    console.log(chalk.yellow('  No supported AI agents detected on this machine.'));
+    console.log(chalk.dim('  Connect one manually with: ') + chalk.cyan('npx mgcheck setup --client <name>') + chalk.dim(' (see --help for names)\n'));
   }
 
   // Check if --yes was passed to bypass the prompt
@@ -30,8 +31,8 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
 
   if (!shouldProceed) {
     const promptText = detectedList.length > 0
-      ? `  Connect Migration Guardian to ${detectedList.join(' & ')}? ${chalk.dim('[Y/n]')} `
-      : `  Connect Migration Guardian to your AI agents? ${chalk.dim('[Y/n]')} `;
+      ? `  Connect Migration Guardian to ${detectedList.length === 1 ? detectedList[0] : `these ${detectedList.length} agents`}? ${chalk.dim('[Y/n]')} `
+      : `  Continue with safety rules and the activity watcher only? ${chalk.dim('[Y/n]')} `;
 
     const rl = readline.createInterface({ input, output });
 
@@ -62,19 +63,30 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   console.log('');
   console.log(chalk.bold('  🔗 Connection Status'));
 
-  const verified = verifyConnections();
-  if (verified.length === 0) {
-    console.log(chalk.yellow('  ⚠  No active connections found. Run ') + chalk.cyan('mgcheck setup') + chalk.yellow(' to retry.'));
-  } else {
-    for (const v of verified) {
-      console.log(v);
+  // Split real connections from leftovers in configs of apps that aren't installed
+  const targeted = (options.client || 'all').toLowerCase();
+  const connections = findConnections(options.workspaceDir || process.cwd());
+  const isWanted = (c: (typeof connections)[number]) => detected[c.client] || CLIENT_FLAGS[c.client] === targeted;
+  const active = connections.filter(isWanted);
+  const leftovers = connections.filter((c) => !isWanted(c));
+
+  if (active.length === 0) {
+    console.log(chalk.yellow('  ⚠  No active connections. Use ') + chalk.cyan('mgcheck setup --client <name>') + chalk.yellow(' to connect an agent.'));
+  }
+  for (const name of new Set(active.map((c) => c.name))) {
+    console.log(chalk.green(`  ✅ Connected to ${name}`));
+  }
+  if (leftovers.length > 0) {
+    console.log(chalk.yellow('\n  ⚠  Leftover config for apps that are not installed:'));
+    for (const c of leftovers) {
+      console.log(chalk.yellow(`     • ${c.name}`) + chalk.dim(`  →  mgcheck uninstall --client ${CLIENT_FLAGS[c.client]}`));
     }
   }
 
   console.log(chalk.bold.green('\n  🎉 Migration Guardian is ready!'));
   console.log(chalk.white('  Your AI assistant will now automatically check migrations before executing.\n'));
   console.log(chalk.dim('  Behavior:'));
-  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Auto-blocked (AI receives error)'));
+  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Auto-blocked (AI receives error, shown here)'));
   console.log(chalk.dim('  • 🟡 MEDIUM risk queries → You will be asked to approve/reject'));
   console.log(chalk.dim('  • 🟢 LOW risk queries    → You will be asked to approve/reject\n'));
 
@@ -85,6 +97,8 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     clearActivityLog,
     getAuditFile,
     getGlobalLogDir,
+    watchEvents,
+    formatAuditEntry,
   } = await import('../core/activity-log.js');
 
   // Approval requests from every project/editor flow through the global ~/.mgcheck queue
@@ -104,6 +118,15 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
 
   // Clear old log entries so they don't replay on startup
   clearActivityLog();
+
+  // Show every check that finishes without needing a decision here
+  // (auto-blocked MCP calls, CLI and git-hook runs) as it happens
+  const stopEvents = watchEvents((entry) => {
+    const source = entry.project ? `${entry.tool} · ${entry.project}` : entry.tool;
+    console.log(chalk.dim(`  via ${source}`));
+    console.log(formatAuditEntry(entry));
+    console.log('');
+  }, ipcDir);
 
   const stopWatching = watchPendingApprovals(async (entry) => {
     // ── Rich Human-Readable Audit Display ──────────────────────
@@ -235,6 +258,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   process.on('SIGINT', () => {
     clearInterval(keepAlive);
     stopWatching();
+    stopEvents();
     rl.close();
     console.log(chalk.dim('\n  Migration Guardian stopped. Goodbye! 👋\n'));
     process.exit(0);

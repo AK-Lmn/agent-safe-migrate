@@ -15,6 +15,7 @@ import {
   generateAuditId,
   getLogDir,
   getGlobalLogDir,
+  publishEvent,
 } from '../core/activity-log.js';
 import type { AuditEntry } from '../core/activity-log.js';
 import { classifyRisk } from '../core/risk-classifier.js';
@@ -116,6 +117,7 @@ export function runMcpTools(server: McpServer) {
           // 🔴 HIGH RISK: Auto-block immediately
           auditEntry.decision = 'blocked';
           writeAuditEntry(auditEntry, auditDir);
+          publishEvent(auditEntry, ipcDir);
           logActivityFromReport('check_migration', report, auditDir);
 
           // Compute suggested safe rewrite
@@ -264,6 +266,7 @@ export function runMcpTools(server: McpServer) {
         if (risk.level === 'high') {
           auditEntry.decision = 'blocked';
           writeAuditEntry(auditEntry, auditDir);
+          publishEvent(auditEntry, ipcDir);
           logActivityFromReport('analyze_migration', report, auditDir);
 
           return {
@@ -410,7 +413,7 @@ export function runMcpTools(server: McpServer) {
               .map((v) => `[${v.ruleId}] ${v.message} (Line ${v.line})`)
               .join('; ');
 
-            writeAuditEntry({
+            const blockedEntry: AuditEntry = {
               id: auditId,
               timestamp: new Date().toISOString(),
               tool: 'apply_migration',
@@ -426,7 +429,9 @@ export function runMcpTools(server: McpServer) {
               })),
               errorCount: blockingErrors.length,
               warningCount: 0,
-            }, auditDir);
+            };
+            writeAuditEntry(blockedEntry, auditDir);
+            publishEvent(blockedEntry, ipcDir);
 
             const fixResult = fixMigrationSql(migration_sql, blockingErrors);
 

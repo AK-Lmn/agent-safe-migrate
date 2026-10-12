@@ -329,35 +329,39 @@ export function logActivity(entry: ActivityEntry, targetDir?: string): void {
 export function watchActivityLog(handler: (entry: ActivityEntry) => void, targetDir?: string): () => void {
   const baseDir = targetDir || getLogDir();
   ensureDirs(baseDir);
-  const logFile = join(baseDir, 'activity.log');
+  return tailJsonLines<ActivityEntry>(join(baseDir, 'activity.log'), handler);
+}
 
-  // Create log file if it doesn't exist
-  if (!existsSync(logFile)) {
-    appendFileSync(logFile, '', 'utf-8');
+/**
+ * Follow a JSON-lines file and call the handler for each line appended after
+ * this call. Handles the file being truncated. Returns a stop function.
+ */
+function tailJsonLines<T>(file: string, handler: (entry: T) => void): () => void {
+  if (!existsSync(file)) {
+    appendFileSync(file, '', 'utf-8');
   }
 
-  // Track current file size to only read new content
-  let lastSize = 0;
+  // Track current byte offset to only read new content
+  let offset = 0;
   try {
-    lastSize = statSync(logFile).size;
+    offset = statSync(file).size;
   } catch { /* fresh start */ }
 
   const interval = setInterval(() => {
     try {
-      const currentSize = statSync(logFile).size;
-      if (currentSize > lastSize) {
-        const fd = readFileSync(logFile, 'utf-8');
-        const newContent = fd.substring(lastSize);
-        lastSize = currentSize;
+      const size = statSync(file).size;
+      if (size < offset) offset = 0; // file was truncated/rotated
+      if (size === offset) return;
 
-        const lines = newContent.split('\n').filter((l: string) => l.trim());
-        for (const line of lines) {
-          try {
-            const entry: ActivityEntry = JSON.parse(line);
-            handler(entry);
-          } catch {
-            // Skip malformed lines
-          }
+      const newContent = readFileSync(file).subarray(offset, size).toString('utf-8');
+      offset = size;
+
+      for (const line of newContent.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          handler(JSON.parse(line) as T);
+        } catch {
+          // Skip malformed lines
         }
       }
     } catch {
@@ -368,6 +372,37 @@ export function watchActivityLog(handler: (entry: ActivityEntry) => void, target
   return () => {
     clearInterval(interval);
   };
+}
+
+// ── Live Event Feed ───────────────────────────────────────────────
+
+const EVENTS_FILE = 'events.jsonl';
+const EVENTS_MAX_BYTES = 1_000_000;
+
+/**
+ * Publish a finished check (auto-blocked MCP call, CLI or git-hook run) to the
+ * global feed that the `mgcheck setup` watcher displays live. Never throws.
+ */
+export function publishEvent(entry: AuditEntry, targetDir: string = getGlobalLogDir()): void {
+  try {
+    ensureDirs(targetDir);
+    const file = join(targetDir, EVENTS_FILE);
+    // The feed is only for live display; keep it bounded
+    if (existsSync(file) && statSync(file).size > EVENTS_MAX_BYTES) {
+      writeFileSync(file, '', 'utf-8');
+    }
+    appendFileSync(file, JSON.stringify(entry) + '\n', 'utf-8');
+  } catch {
+    // Display feed must never break a check
+  }
+}
+
+/**
+ * Watch the global event feed for checks published after this call.
+ */
+export function watchEvents(handler: (entry: AuditEntry) => void, targetDir: string = getGlobalLogDir()): () => void {
+  ensureDirs(targetDir);
+  return tailJsonLines<AuditEntry>(join(targetDir, EVENTS_FILE), handler);
 }
 
 /**
