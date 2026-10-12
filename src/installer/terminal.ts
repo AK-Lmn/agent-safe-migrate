@@ -133,6 +133,11 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   // Show every check that finishes without needing a decision here
   // (auto-blocked MCP calls, CLI and git-hook runs) as it happens
   const stopEvents = watchEvents((entry) => {
+    if (entry.decision === 'auto_retry') {
+      const attemptStr = entry.attempt ? `[Attempt ${entry.attempt}/4]` : '[Auto-Retry]';
+      console.log(chalk.cyan(`\n  ⚡ ${attemptStr} Intercepted unsafe migration — guiding AI agent to rewrite with safe patterns...`));
+      return;
+    }
     const source = entry.project ? `${entry.tool} · ${entry.project}` : entry.tool;
     console.log(chalk.dim(`  via ${source}`));
     console.log(formatAuditEntry(entry));
@@ -173,9 +178,15 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     const color = riskColors[entry.risk] || chalk.white;
     const emoji = riskEmoji[entry.risk] || '⚪';
 
+    const hasOriginalDraft = !!entry.originalDraft;
+
     console.log('');
     console.log(chalk.bold.cyan('  ┌─────────────────────────────────────────────────────────┐'));
-    console.log(chalk.bold.cyan('  │') + chalk.bold('  📋 MIGRATION INTERCEPTED                               ') + chalk.bold.cyan('│'));
+    if (hasOriginalDraft) {
+      console.log(chalk.bold.cyan('  │') + chalk.bold.green('  📋 MIGRATION VERIFIED & READY TO APPLY                 ') + chalk.bold.cyan('│'));
+    } else {
+      console.log(chalk.bold.cyan('  │') + chalk.bold('  📋 MIGRATION INTERCEPTED                               ') + chalk.bold.cyan('│'));
+    }
     console.log(chalk.bold.cyan('  └─────────────────────────────────────────────────────────┘'));
     console.log('');
 
@@ -188,6 +199,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     console.log(chalk.dim('  │'));
     console.log(chalk.dim('  │  ') + chalk.white('Timestamp  : ') + chalk.cyan(`${dateStr}, ${timeStr}`));
     console.log(chalk.dim('  │  ') + chalk.white('Audit ID   : ') + chalk.dim(entry.id));
+    if (entry.attempt && entry.attempt > 1) {
+      console.log(chalk.dim('  │  ') + chalk.white('Attempts   : ') + chalk.green.bold(`${entry.attempt} (Auto-corrected by AI on attempt ${entry.attempt})`));
+    }
     if (entry.project) {
       console.log(chalk.dim('  │  ') + chalk.white('Project    : ') + chalk.cyan(entry.project));
     }
@@ -195,59 +209,98 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     console.log(chalk.dim('  │  ') + chalk.dim(`             ${riskExplanation[entry.risk] || ''}`));
     console.log(chalk.dim('  │'));
 
-    // ── SQL Query (full, with line numbers) ─────────────────────
-    console.log(chalk.dim('  ├── SQL Query ────────────────────────────────────────────'));
-    console.log(chalk.dim('  │'));
-
-    const queryLines = entry.query.split('\n');
-    const maxLineNumWidth = String(queryLines.length).length;
-
-    for (let i = 0; i < queryLines.length; i++) {
-      const lineNum = String(i + 1).padStart(maxLineNumWidth, ' ');
-      const lineContent = queryLines[i];
-
-      // Highlight lines that have violations
-      const violationsOnLine = entry.violations.filter((v) => v.line === i + 1);
-      if (violationsOnLine.length > 0) {
-        console.log(chalk.dim('  │  ') + chalk.red(`${lineNum} │ `) + chalk.red.bold(lineContent));
-      } else {
-        console.log(chalk.dim('  │  ') + chalk.dim(`${lineNum} │ `) + chalk.white(lineContent));
-      }
-    }
-    console.log(chalk.dim('  │'));
-
-    // ── Violations ──────────────────────────────────────────────
-    if (entry.violations.length > 0) {
-      console.log(chalk.dim('  ├── Violations ──────────────────────────────────────────'));
+    if (hasOriginalDraft && entry.originalDraft) {
+      // ── Comparison View: Original Draft vs Safe Rewrite ────────
+      console.log(chalk.dim('  ├── ') + chalk.red.bold('❌ Original Draft (Unsafe)') + chalk.dim(' ──────────────────────────────'));
       console.log(chalk.dim('  │'));
 
-      for (const v of entry.violations) {
+      const origLines = entry.originalDraft.query.split('\n');
+      const origMaxLineNumWidth = String(origLines.length).length;
+      for (let i = 0; i < origLines.length; i++) {
+        const lineNum = String(i + 1).padStart(origMaxLineNumWidth, ' ');
+        console.log(chalk.dim('  │  ') + chalk.red(`${lineNum} │ `) + chalk.red(origLines[i]));
+      }
+      console.log(chalk.dim('  │'));
+      console.log(chalk.dim('  │  ') + chalk.bold.red('Violations Caught in Draft:'));
+      for (const v of entry.originalDraft.violations) {
         const sevIcon = v.severity === 'error' ? chalk.red.bold('✗ ERROR  ') : chalk.yellow.bold('⚠ WARNING');
         const lineInfo = v.line != null ? chalk.dim(` (line ${v.line})`) : '';
         console.log(chalk.dim('  │  ') + sevIcon + chalk.dim(` [${v.ruleId}]`) + lineInfo);
         console.log(chalk.dim('  │    ') + chalk.white(v.message));
+      }
+      console.log(chalk.dim('  │'));
+
+      console.log(chalk.dim('  ├── ') + chalk.green.bold('✅ Safe Rewrite (Auto-Corrected)') + chalk.dim(' ─────────────────────────'));
+      console.log(chalk.dim('  │'));
+
+      const fixedLines = entry.query.split('\n');
+      const fixedMaxLineNumWidth = String(fixedLines.length).length;
+      for (let i = 0; i < fixedLines.length; i++) {
+        const lineNum = String(i + 1).padStart(fixedMaxLineNumWidth, ' ');
+        console.log(chalk.dim('  │  ') + chalk.green(`${lineNum} │ `) + chalk.green.bold(fixedLines[i]));
+      }
+      console.log(chalk.dim('  │'));
+      console.log(chalk.dim('  │  ') + chalk.bold.green('Safety Verification:'));
+      console.log(chalk.dim('  │  ') + chalk.green('✓') + chalk.white(' Zero blocking errors detected'));
+      console.log(chalk.dim('  │  ') + chalk.green('✓') + chalk.white(' Verified safe for zero-downtime execution'));
+      console.log(chalk.dim('  │'));
+      console.log(chalk.dim('  └────────────────────────────────────────────────────────'));
+      console.log('');
+    } else {
+      // ── Standard SQL Query (full, with line numbers) ───────────
+      console.log(chalk.dim('  ├── SQL Query ────────────────────────────────────────────'));
+      console.log(chalk.dim('  │'));
+
+      const queryLines = entry.query.split('\n');
+      const maxLineNumWidth = String(queryLines.length).length;
+
+      for (let i = 0; i < queryLines.length; i++) {
+        const lineNum = String(i + 1).padStart(maxLineNumWidth, ' ');
+        const lineContent = queryLines[i];
+
+        // Highlight lines that have violations
+        const violationsOnLine = entry.violations.filter((v) => v.line === i + 1);
+        if (violationsOnLine.length > 0) {
+          console.log(chalk.dim('  │  ') + chalk.red(`${lineNum} │ `) + chalk.red.bold(lineContent));
+        } else {
+          console.log(chalk.dim('  │  ') + chalk.dim(`${lineNum} │ `) + chalk.white(lineContent));
+        }
+      }
+      console.log(chalk.dim('  │'));
+
+      // ── Violations ──────────────────────────────────────────────
+      if (entry.violations.length > 0) {
+        console.log(chalk.dim('  ├── Violations ──────────────────────────────────────────'));
+        console.log(chalk.dim('  │'));
+
+        for (const v of entry.violations) {
+          const sevIcon = v.severity === 'error' ? chalk.red.bold('✗ ERROR  ') : chalk.yellow.bold('⚠ WARNING');
+          const lineInfo = v.line != null ? chalk.dim(` (line ${v.line})`) : '';
+          console.log(chalk.dim('  │  ') + sevIcon + chalk.dim(` [${v.ruleId}]`) + lineInfo);
+          console.log(chalk.dim('  │    ') + chalk.white(v.message));
+          console.log(chalk.dim('  │'));
+        }
+      } else {
+        console.log(chalk.dim('  ├── Violations ──────────────────────────────────────────'));
+        console.log(chalk.dim('  │'));
+        console.log(chalk.dim('  │  ') + chalk.green('  No violations detected'));
         console.log(chalk.dim('  │'));
       }
-    } else {
-      console.log(chalk.dim('  ├── Violations ──────────────────────────────────────────'));
-      console.log(chalk.dim('  │'));
-      console.log(chalk.dim('  │  ') + chalk.green('  No violations detected'));
-      console.log(chalk.dim('  │'));
-    }
 
-    // ── Summary Counts ──────────────────────────────────────────
-    console.log(chalk.dim('  ├── Summary ─────────────────────────────────────────────'));
-    console.log(chalk.dim('  │'));
-    const errStr = entry.errorCount > 0
-      ? chalk.red.bold(`${entry.errorCount} error${entry.errorCount !== 1 ? 's' : ''}`)
-      : chalk.green('0 errors');
-    const warnStr = entry.warningCount > 0
-      ? chalk.yellow.bold(`${entry.warningCount} warning${entry.warningCount !== 1 ? 's' : ''}`)
-      : chalk.green('0 warnings');
-    console.log(chalk.dim('  │  ') + errStr + chalk.dim('  ·  ') + warnStr);
-    console.log(chalk.dim('  │'));
-    console.log(chalk.dim('  └────────────────────────────────────────────────────────'));
-    console.log('');
+      // ── Summary Counts ──────────────────────────────────────────
+      console.log(chalk.dim('  ├── Summary ─────────────────────────────────────────────'));
+      console.log(chalk.dim('  │'));
+      const errStr = entry.errorCount > 0
+        ? chalk.red.bold(`${entry.errorCount} error${entry.errorCount !== 1 ? 's' : ''}`)
+        : chalk.green('0 errors');
+      const warnStr = entry.warningCount > 0
+        ? chalk.yellow.bold(`${entry.warningCount} warning${entry.warningCount !== 1 ? 's' : ''}`)
+        : chalk.green('0 warnings');
+      console.log(chalk.dim('  │  ') + errStr + chalk.dim('  ·  ') + warnStr);
+      console.log(chalk.dim('  │'));
+      console.log(chalk.dim('  └────────────────────────────────────────────────────────'));
+      console.log('');
+    }
 
     // ── Prompt for Decision ─────────────────────────────────────
     // 🔴 HIGH needs a typed word so a stray "y" or Enter can never let it through

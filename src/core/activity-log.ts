@@ -133,7 +133,7 @@ export interface AuditEntry {
   /** Risk classification */
   risk: RiskLevel;
   /** What happened */
-  decision: 'blocked' | 'user_approved' | 'user_override' | 'user_rejected' | 'auto_allowed' | 'pending';
+  decision: 'blocked' | 'user_approved' | 'user_override' | 'user_rejected' | 'auto_allowed' | 'pending' | 'auto_retry';
   /** The full SQL query attempted */
   query: string;
   /** Violations found */
@@ -147,6 +147,19 @@ export interface AuditEntry {
   errorCount: number;
   /** Count of warnings */
   warningCount: number;
+  /** Attempt number in retry loop (e.g. 1, 2, 3, 4) */
+  attempt?: number;
+  /** Original unsafe draft if this was auto-corrected */
+  originalDraft?: {
+    query: string;
+    violations: {
+      ruleId: string;
+      severity: 'error' | 'warning';
+      message: string;
+      line?: number;
+    }[];
+    errorCount: number;
+  };
 }
 
 // ── Legacy Activity Entry (kept for backward compat) ─────────────
@@ -553,6 +566,7 @@ export function formatAuditEntry(entry: AuditEntry): string {
     user_override: chalk.magenta('OVERRIDDEN BY USER'),
     auto_allowed: chalk.green('ALLOWED'),
     pending: chalk.yellow('PENDING'),
+    auto_retry: chalk.cyan(`AUTO-RETRY (Attempt ${entry.attempt || 1}/4)`),
   };
   const decisionLabel = decisionLabels[entry.decision] || entry.decision;
 

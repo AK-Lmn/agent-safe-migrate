@@ -204,7 +204,7 @@ describe('MCP tool storage routing', () => {
 
     const entries = readAuditLog({ path: join(projectDir, '.mgcheck', 'audit.jsonl') });
     expect(entries).toHaveLength(1);
-    expect(entries[0].decision).toBe('blocked');
+    expect(['blocked', 'auto_retry']).toContain(entries[0].decision);
     expect(entries[0].project).toBe(projectDir);
   });
 

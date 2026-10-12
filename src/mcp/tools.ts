@@ -22,6 +22,41 @@ import type { MigrationReport } from '../core/types.js';
 import { fixMigrationSql } from '../fixer/rules-fixer.js';
 import { findDatabaseUrl } from '../core/applier.js';
 
+export interface RetrySession {
+  attempt: number;
+  originalDraft: {
+    query: string;
+    violations: Array<{
+      ruleId: string;
+      severity: 'error' | 'warning';
+      message: string;
+      line?: number;
+    }>;
+    errorCount: number;
+  };
+  lastTimestamp: number;
+}
+
+const retrySessions = new Map<string, RetrySession>();
+
+export function getRetrySession(projectKey: string): RetrySession | undefined {
+  const session = retrySessions.get(projectKey);
+  if (!session) return undefined;
+  if (Date.now() - session.lastTimestamp > 180_000) {
+    retrySessions.delete(projectKey);
+    return undefined;
+  }
+  return session;
+}
+
+export function clearRetrySession(projectKey: string): void {
+  retrySessions.delete(projectKey);
+}
+
+export function resetAllRetrySessions(): void {
+  retrySessions.clear();
+}
+
 /**
  * Register MCP tools on the server.
  *
@@ -107,6 +142,83 @@ export function runMcpTools(server: McpServer) {
         const risk = classifyRisk(report.violations);
         const auditId = generateAuditId();
 
+        const fixResult = fixMigrationSql(migration_sql, report.violations);
+        const isDestructive = (report.hasDestructive || report.violations.some((v) => v.ruleId === 'MG005' || v.ruleId === 'MG006')) && !confirm_destructive;
+        const activeSession = getRetrySession(projectDir);
+        const currentAttempt = (activeSession ? activeSession.attempt : 0) + 1;
+
+        // ── Autonomous Retry Loop (Attempts 1 to 3) ──────────────
+        // If query has blocking errors, has an auto-fix, is not unconfirmed destructive, and under 4 attempts:
+        if (risk.level === 'high' && fixResult.fixed && !isDestructive && currentAttempt < 4) {
+          retrySessions.set(projectDir, {
+            attempt: currentAttempt,
+            originalDraft: activeSession?.originalDraft || {
+              query: migration_sql,
+              violations: report.violations.map((v) => ({
+                ruleId: v.ruleId,
+                severity: v.severity,
+                message: v.message,
+                line: v.line,
+              })),
+              errorCount: risk.errorCount,
+            },
+            lastTimestamp: Date.now(),
+          });
+
+          const retryEntry: AuditEntry = {
+            id: auditId,
+            timestamp: new Date().toISOString(),
+            tool: 'check_migration',
+            project: projectDir,
+            risk: risk.level,
+            decision: 'auto_retry',
+            query: migration_sql,
+            violations: report.violations.map((v) => ({
+              ruleId: v.ruleId,
+              severity: v.severity,
+              message: v.message,
+              line: v.line,
+            })),
+            errorCount: risk.errorCount,
+            warningCount: risk.warningCount,
+            attempt: currentAttempt,
+          };
+          writeAuditEntry(retryEntry, auditDir);
+          publishEvent(retryEntry, ipcDir);
+          logActivityFromReport('check_migration', report, auditDir);
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ...report,
+                guardian: {
+                  risk: risk.level,
+                  decision: 'auto_retry',
+                  attempt: currentAttempt,
+                  max_attempts: 4,
+                  message: `⚠️ MIGRATION REJECTED (Attempt ${currentAttempt}/4): Detected ${risk.errorCount} blocking safety violation(s). You must rewrite your query using the suggested safe SQL below and retry.`,
+                  auto_fix: {
+                    available: true,
+                    suggested_safe_sql: fixResult.fixedSql,
+                    applied_fixes: fixResult.appliedFixes,
+                    instruction: "Replace your unsafe query with 'suggested_safe_sql' and run check_migration again.",
+                  },
+                },
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+
+        const originalDraft = activeSession?.originalDraft;
+        const attemptNumber = activeSession ? activeSession.attempt + 1 : 1;
+        if (risk.level !== 'high' && activeSession) {
+          clearRetrySession(projectDir);
+        } else if (currentAttempt >= 4 || isDestructive) {
+          clearRetrySession(projectDir);
+        }
+
         // Build the audit entry
         const auditEntry: AuditEntry = {
           id: auditId,
@@ -124,6 +236,8 @@ export function runMcpTools(server: McpServer) {
           })),
           errorCount: risk.errorCount,
           warningCount: risk.warningCount,
+          attempt: attemptNumber,
+          originalDraft,
         };
 
         // ── Decision Gate ────────────────────────────────────────
@@ -273,6 +387,81 @@ export function runMcpTools(server: McpServer) {
         const risk = classifyRisk(report.violations);
         const auditId = generateAuditId();
 
+        const fixResult = fixMigrationSql(migration_sql, report.violations);
+        const isDestructive = (report.hasDestructive || report.violations.some((v) => v.ruleId === 'MG005' || v.ruleId === 'MG006')) && !confirm_destructive;
+        const activeSession = getRetrySession(projectDir);
+        const currentAttempt = (activeSession ? activeSession.attempt : 0) + 1;
+
+        if (risk.level === 'high' && fixResult.fixed && !isDestructive && currentAttempt < 4) {
+          retrySessions.set(projectDir, {
+            attempt: currentAttempt,
+            originalDraft: activeSession?.originalDraft || {
+              query: migration_sql,
+              violations: report.violations.map((v) => ({
+                ruleId: v.ruleId,
+                severity: v.severity,
+                message: v.message,
+                line: v.line,
+              })),
+              errorCount: risk.errorCount,
+            },
+            lastTimestamp: Date.now(),
+          });
+
+          const retryEntry: AuditEntry = {
+            id: auditId,
+            timestamp: new Date().toISOString(),
+            tool: 'analyze_migration',
+            project: projectDir,
+            risk: risk.level,
+            decision: 'auto_retry',
+            query: migration_sql,
+            violations: report.violations.map((v) => ({
+              ruleId: v.ruleId,
+              severity: v.severity,
+              message: v.message,
+              line: v.line,
+            })),
+            errorCount: risk.errorCount,
+            warningCount: risk.warningCount,
+            attempt: currentAttempt,
+          };
+          writeAuditEntry(retryEntry, auditDir);
+          publishEvent(retryEntry, ipcDir);
+          logActivityFromReport('analyze_migration', report, auditDir);
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ...report,
+                guardian: {
+                  risk: risk.level,
+                  decision: 'auto_retry',
+                  attempt: currentAttempt,
+                  max_attempts: 4,
+                  message: `⚠️ MIGRATION REJECTED (Attempt ${currentAttempt}/4): Detected ${risk.errorCount} blocking safety violation(s). You must rewrite your query using the suggested safe SQL below and retry.`,
+                  auto_fix: {
+                    available: true,
+                    suggested_safe_sql: fixResult.fixedSql,
+                    applied_fixes: fixResult.appliedFixes,
+                    instruction: "Replace your unsafe query with 'suggested_safe_sql' and run analyze_migration again.",
+                  },
+                },
+              }, null, 2),
+            }],
+            isError: true,
+          };
+        }
+
+        const originalDraft = activeSession?.originalDraft;
+        const attemptNumber = activeSession ? activeSession.attempt + 1 : 1;
+        if (risk.level !== 'high' && activeSession) {
+          clearRetrySession(projectDir);
+        } else if (currentAttempt >= 4 || isDestructive) {
+          clearRetrySession(projectDir);
+        }
+
         const auditEntry: AuditEntry = {
           id: auditId,
           timestamp: new Date().toISOString(),
@@ -289,6 +478,8 @@ export function runMcpTools(server: McpServer) {
           })),
           errorCount: risk.errorCount,
           warningCount: risk.warningCount,
+          attempt: attemptNumber,
+          originalDraft,
         };
 
         const outcome = await requestApproval(auditEntry, ipcDir);
@@ -435,6 +626,87 @@ export function runMcpTools(server: McpServer) {
             (v) => v.severity === 'error'
           );
 
+          const fixResult = fixMigrationSql(migration_sql, blockingErrors);
+          const isDestructive = (preCheckReport.hasDestructive || blockingErrors.some((v) => v.ruleId === 'MG005' || v.ruleId === 'MG006')) && !confirm_destructive;
+          const activeSession = getRetrySession(projectDir);
+          const currentAttempt = (activeSession ? activeSession.attempt : 0) + 1;
+
+          // ── Autonomous Retry Loop (Attempts 1 to 3) ──────────────
+          if (blockingErrors.length > 0 && fixResult.fixed && !isDestructive && currentAttempt < 4) {
+            retrySessions.set(projectDir, {
+              attempt: currentAttempt,
+              originalDraft: activeSession?.originalDraft || {
+                query: migration_sql,
+                violations: blockingErrors.map((v) => ({
+                  ruleId: v.ruleId,
+                  severity: v.severity,
+                  message: v.message,
+                  line: v.line,
+                })),
+                errorCount: blockingErrors.length,
+              },
+              lastTimestamp: Date.now(),
+            });
+
+            const retryAudit: AuditEntry = {
+              id: auditId,
+              timestamp: new Date().toISOString(),
+              tool: 'apply_migration',
+              project: projectDir,
+              risk: 'high',
+              decision: 'auto_retry',
+              query: migration_sql,
+              violations: preCheckReport.violations.map((v) => ({
+                ruleId: v.ruleId,
+                severity: v.severity,
+                message: v.message,
+                line: v.line,
+              })),
+              errorCount: risk.errorCount,
+              warningCount: risk.warningCount,
+              attempt: currentAttempt,
+            };
+            writeAuditEntry(retryAudit, auditDir);
+            publishEvent(retryAudit, ipcDir);
+
+            const violationSummary = blockingErrors
+              .map((v) => `[${v.ruleId}] ${v.message} (Line ${v.line})`)
+              .join('; ');
+
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({
+                  success: false,
+                  error: `SECURITY GATE REJECTION (Attempt ${currentAttempt}/4): Cannot apply migration. Detected ${blockingErrors.length} blocking violation(s): ${violationSummary}`,
+                  guardian: {
+                    risk: 'high',
+                    decision: 'auto_retry',
+                    attempt: currentAttempt,
+                    max_attempts: 4,
+                    message: `Attempt ${currentAttempt}/4: Unsafe migration rejected. Rewrite with suggested_safe_sql and call apply_migration again.`,
+                  },
+                  violations: blockingErrors,
+                  auto_fix: {
+                    available: true,
+                    suggested_safe_sql: fixResult.fixedSql,
+                    applied_fixes: fixResult.appliedFixes,
+                    instruction: "You must use 'suggested_safe_sql' to apply zero-downtime safe migrations.",
+                  },
+                }, null, 2),
+              }],
+              isError: true,
+            };
+          }
+
+          const originalDraft = activeSession?.originalDraft;
+          const attemptNumber = activeSession ? activeSession.attempt + 1 : 1;
+          if (blockingErrors.length === 0 && activeSession) {
+            clearRetrySession(projectDir);
+          } else if (currentAttempt >= 4 || isDestructive) {
+            clearRetrySession(projectDir);
+          }
+
           const applyAudit: AuditEntry = {
             id: auditId,
             timestamp: new Date().toISOString(),
@@ -451,6 +723,8 @@ export function runMcpTools(server: McpServer) {
             })),
             errorCount: risk.errorCount,
             warningCount: risk.warningCount,
+            attempt: attemptNumber,
+            originalDraft,
           };
 
           // Every apply is shown in the watcher terminal; 🔴 needs a typed override
