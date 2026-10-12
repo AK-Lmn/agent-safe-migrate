@@ -1307,5 +1307,26 @@ function purgeStorage(workspaceDir: string): string[] {
   return results;
 }
 
+/**
+ * Terminates any background mgcheck MCP server processes running on the machine.
+ * Useful when upgrading versions or shutting down the watcher, so IDEs restart
+ * with the latest code instead of keeping stale in-memory servers.
+ */
+export function stopRunningMcpServers(): void {
+  try {
+    if (process.platform === 'win32') {
+      execSync(
+        `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name = 'node.exe'\\" | Where-Object { \\$_.CommandLine -like '*mgcheck*mcp*' } | Stop-Process -Force -ErrorAction SilentlyContinue"`,
+        { stdio: 'ignore' }
+      );
+    } else {
+      execSync('pkill -f "mgcheck.*mcp"', { stdio: 'ignore' });
+    }
+  } catch {
+    // Best-effort process cleanup
+  }
+}
+
 export { runInteractiveWizard, runUninstallWizard } from './terminal.js';
+
 

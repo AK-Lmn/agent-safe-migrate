@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { SetupOptions } from './index.js';
 import type { AuditEntry } from '../core/activity-log.js';
-import { detectClients, setupMcp, uninstallMcp, findConnections, CLIENT_FLAGS } from './index.js';
+import { detectClients, setupMcp, uninstallMcp, findConnections, CLIENT_FLAGS, stopRunningMcpServers } from './index.js';
 
 /**
  * Interactive Wizard: Auto-detects clients, prompts the user, and connects.
@@ -123,6 +123,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   // Tell MCP tools a human is here to answer approval requests
   const stopHeartbeat = startWatcherHeartbeat(ipcDir);
   process.on('exit', stopHeartbeat);
+
+  // Stop any stale background MCP servers so agents pick up the fresh installation
+  stopRunningMcpServers();
 
   // Clear old log entries so they don't replay on startup
   clearActivityLog();
@@ -294,8 +297,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     stopWatching();
     stopEvents();
     stopHeartbeat();
+    stopRunningMcpServers();
     rl.close();
-    console.log(chalk.dim('\n  Migration Guardian stopped. Goodbye! 👋\n'));
+    console.log(chalk.dim('\n  Migration Guardian stopped. Background MCP servers terminated. Goodbye! 👋\n'));
     process.exit(0);
   });
 }
@@ -329,6 +333,7 @@ export async function runUninstallWizard(options: SetupOptions = {}) {
   }
 
   console.log(chalk.dim('\n  Removing integrations...\n'));
+  stopRunningMcpServers();
   const results = uninstallMcp(options);
 
   if (results.length === 0) {
