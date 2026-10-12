@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { promptAndApplyIfConfirmed, promptDestructiveConfirmation } from '../../src/core/applier.js';
+import { promptAndApplyIfConfirmed, promptDestructiveConfirmation, findDatabaseUrl } from '../../src/core/applier.js';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 describe('Real Database Applier', () => {
   it('should not prompt or apply in CI mode', async () => {
@@ -23,4 +26,19 @@ describe('Real Database Applier', () => {
     ], true);
     expect(approved).toBe(false);
   });
+
+  it('should discover DATABASE_URL from project root and nested Backend/.env', () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'mgcheck-env-test-'));
+    try {
+      const backendDir = join(testDir, 'Backend');
+      mkdirSync(backendDir, { recursive: true });
+      writeFileSync(join(backendDir, '.env'), 'DATABASE_URL=postgresql://user:pass@localhost:5432/mydb\n', 'utf-8');
+
+      const url = findDatabaseUrl(testDir);
+      expect(url).toBe('postgresql://user:pass@localhost:5432/mydb');
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
 });
+

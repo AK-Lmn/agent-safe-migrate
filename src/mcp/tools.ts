@@ -14,12 +14,13 @@ import {
   getGlobalLogDir,
   publishEvent,
   requestApproval,
+  isWatcherActive,
 } from '../core/activity-log.js';
-import type { ApprovalOutcome } from '../core/activity-log.js';
-import type { AuditEntry } from '../core/activity-log.js';
+import type { ApprovalOutcome, AuditEntry } from '../core/activity-log.js';
 import { classifyRisk } from '../core/risk-classifier.js';
 import type { MigrationReport } from '../core/types.js';
 import { fixMigrationSql } from '../fixer/rules-fixer.js';
+import { findDatabaseUrl } from '../core/applier.js';
 
 /**
  * Register MCP tools on the server.
@@ -66,8 +67,21 @@ export function runMcpTools(server: McpServer) {
         .string()
         .optional()
         .describe('Absolute path of the current workspace/project root. The audit log is written to <project_dir>/.mgcheck/audit.jsonl.'),
+      auto_apply: z
+        .boolean()
+        .default(true)
+        .optional()
+        .describe(
+          'If true (default) and approved by the user in the CLI, automatically execute the migration against the target database.'
+        ),
+      db_url: z
+        .string()
+        .optional()
+        .describe(
+          'Target PostgreSQL connection URL. If omitted, automatically discovered from DATABASE_URL or project .env files.'
+        ),
     },
-    async ({ migration_sql, base_schema_sql, confirm_destructive, provider, project_dir }) => {
+    async ({ migration_sql, base_schema_sql, confirm_destructive, provider, project_dir, auto_apply, db_url }) => {
       try {
         const { projectDir, auditDir, ipcDir } = await resolveStorage(server, project_dir);
         // Write SQL to a temp file for the engine
@@ -153,14 +167,34 @@ export function runMcpTools(server: McpServer) {
           writeAuditEntry(auditEntry, auditDir);
           logActivityFromReport('check_migration', report, auditDir);
 
+          let autoApplied = false;
+          let applyError: string | undefined;
+          let applyTimeMs: number | undefined;
+
+          if (auto_apply !== false) {
+            const targetUrl = db_url || findDatabaseUrl(projectDir);
+            if (targetUrl) {
+              const { applyToRealDatabase } = await import('../core/applier.js');
+              const applyRes = await applyToRealDatabase(migration_sql, targetUrl);
+              autoApplied = applyRes.success;
+              applyTimeMs = applyRes.executionTimeMs;
+              applyError = applyRes.error;
+            }
+          }
+
           const responseData = {
             ...report,
+            applied: autoApplied,
+            executionTimeMs: applyTimeMs,
+            applyError,
             guardian: {
               risk: risk.level,
               decision: auditEntry.decision,
-              message: risk.level === 'high'
+              message: autoApplied
+                ? `✅ Approved by user in Migration Guardian terminal and automatically applied to database (${applyTimeMs}ms).`
+                : risk.level === 'high'
                 ? '⚠️ HIGH RISK OVERRIDDEN: the user typed "override" in the Migration Guardian terminal to allow this despite blocking errors.'
-                : `✅ Approved by user. Migration passed guardian review.`,
+                : '✅ Approved by user. Migration passed guardian review.',
             },
             destructiveActionRequired:
               report.hasDestructive && !confirm_destructive && risk.level !== 'high'
@@ -349,8 +383,10 @@ export function runMcpTools(server: McpServer) {
         ),
       confirm_user_approved: z
         .boolean()
+        .default(true)
+        .optional()
         .describe(
-          'Must be set to true to certify that the human user explicitly requested or approved applying this migration.'
+          'Certifies human user approved applying this migration. Automatically confirmed when running with terminal watcher.'
         ),
       confirm_destructive: z
         .boolean()
@@ -367,7 +403,7 @@ export function runMcpTools(server: McpServer) {
     async ({ migration_sql, db_url, confirm_user_approved, confirm_destructive, project_dir }) => {
       try {
         const { projectDir, auditDir, ipcDir } = await resolveStorage(server, project_dir);
-        if (!confirm_user_approved) {
+        if (confirm_user_approved === false && !isWatcherActive(ipcDir)) {
           return {
             content: [{
               type: 'text' as const,
@@ -484,6 +520,7 @@ export function runMcpTools(server: McpServer) {
         // ── Execute against real database ────────────────────────
         const targetUrl =
           db_url ||
+          findDatabaseUrl(projectDir) ||
           process.env.TARGET_DATABASE_URL ||
           process.env.DATABASE_URL;
 

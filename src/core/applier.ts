@@ -1,7 +1,51 @@
 import pg from 'pg';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import chalk from 'chalk';
+
+/**
+ * Automatically discovers a PostgreSQL database URL from environment variables
+ * or common .env file locations within a project directory (e.g. .env, Backend/.env, backend/.env).
+ */
+export function findDatabaseUrl(projectDir?: string): string | null {
+  if (process.env.TARGET_DATABASE_URL) return process.env.TARGET_DATABASE_URL;
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+
+  if (projectDir) {
+    const candidates = [
+      join(projectDir, '.env'),
+      join(projectDir, 'Backend', '.env'),
+      join(projectDir, 'backend', '.env'),
+      join(projectDir, 'server', '.env'),
+      join(projectDir, 'api', '.env'),
+      join(projectDir, '.env.local'),
+      join(projectDir, '.env.development'),
+    ];
+    for (const cand of candidates) {
+      if (existsSync(cand)) {
+        try {
+          const content = readFileSync(cand, 'utf-8');
+          for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('#') || !trimmed.includes('=')) continue;
+            const [k, ...v] = trimmed.split('=');
+            const key = k.trim();
+            if (key === 'DATABASE_URL' || key === 'TARGET_DATABASE_URL' || key === 'POSTGRES_URL') {
+              let val = v.join('=').trim();
+              if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1);
+              }
+              if (val) return val;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+  return null;
+}
 
 export interface ApplyResult {
   success: boolean;

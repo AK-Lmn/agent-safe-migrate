@@ -254,10 +254,10 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
         ? await rl.question(
             chalk.red.bold('  🔴 BLOCKED as HIGH risk. ') +
             chalk.white('Type ') + chalk.red.bold('override') +
-            chalk.white(' to allow it anyway, or press Enter to keep it blocked: ')
+            chalk.white(' to apply it to your database anyway, or press Enter to keep it blocked: ')
           )
         : await rl.question(
-            color(`  ➜ Allow this ${entry.risk.toUpperCase()} risk migration? `) +
+            color(`  ➜ Apply this ${entry.risk.toUpperCase()} risk migration to your database? `) +
             chalk.dim('[y/N] ')
           );
       const trimmed = answer.trim().toLowerCase();
@@ -268,10 +268,10 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
 
       if (isHigh) {
         console.log(approved
-          ? chalk.magenta.bold('  ⚠️  Overridden — you allowed a HIGH risk migration. The AI agent may proceed.\n')
+          ? chalk.magenta.bold('  ⚠️  Overridden — applying HIGH risk migration to database...\n')
           : chalk.red('  🛑 Kept blocked — the AI agent was told to fix the violations.\n'));
       } else if (approved) {
-        console.log(chalk.green('  ✅ Approved — AI agent may proceed.\n'));
+        console.log(chalk.green('  ✅ Approved — applying to database...\n'));
       } else {
         console.log(chalk.red('  ❌ Rejected — AI agent received error.\n'));
       }
