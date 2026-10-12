@@ -9,14 +9,13 @@ import { loadConfig } from '../core/config.js';
 import {
   logActivity,
   writeAuditEntry,
-  writePendingApproval,
-  waitForDecision,
-  removePendingApproval,
   generateAuditId,
   getLogDir,
   getGlobalLogDir,
   publishEvent,
+  requestApproval,
 } from '../core/activity-log.js';
+import type { ApprovalOutcome } from '../core/activity-log.js';
 import type { AuditEntry } from '../core/activity-log.js';
 import { classifyRisk } from '../core/risk-classifier.js';
 import type { MigrationReport } from '../core/types.js';
@@ -27,9 +26,10 @@ import { fixMigrationSql } from '../fixer/rules-fixer.js';
  *
  * The MCP server is the single interception point between AI agents and the database.
  * Every migration query is classified by risk:
- *   🔴 HIGH   → Auto-blocked. Returns error immediately.
- *   🟡 MEDIUM → Pauses. Waits for user approval in the CLI watch terminal.
- *   🟢 LOW    → Pauses. Waits for user approval in the CLI watch terminal.
+ *   🔴 HIGH   → Blocked unless the user types "override" in the watch terminal.
+ *   🟡 MEDIUM → Pauses. Waits for a y/N answer in the watch terminal.
+ *   🟢 LOW    → Pauses. Waits for a y/N answer in the watch terminal.
+ * With no watch terminal running, HIGH is blocked and MEDIUM/LOW return at once.
  *
  * Decisions are logged to the calling project's .mgcheck/audit.jsonl (see resolveProjectDir).
  * Approval requests always go through the global ~/.mgcheck queue so a single
@@ -39,7 +39,7 @@ export function runMcpTools(server: McpServer) {
   // ── Tool 1: check_migration ──────────────────────────────────────
   server.tool(
     'check_migration',
-    'Analyze a database migration for safety issues and execute it against a disposable shadow PostgreSQL database. Returns a detailed report with violations, explanations, and suggested fixes. HIGH risk queries are automatically blocked. MEDIUM and LOW risk queries require human approval via the CLI.',
+    'Analyze a database migration for safety issues and execute it against a disposable shadow PostgreSQL database. Returns a detailed report with violations, explanations, and suggested fixes. HIGH risk queries are blocked unless the user overrides them in the Migration Guardian terminal. MEDIUM and LOW risk queries require human approval there.',
     {
       migration_sql: z
         .string()
@@ -113,11 +113,14 @@ export function runMcpTools(server: McpServer) {
         };
 
         // ── Decision Gate ────────────────────────────────────────
-        if (risk.level === 'high') {
-          // 🔴 HIGH RISK: Auto-block immediately
-          auditEntry.decision = 'blocked';
+        // Every risk level is shown to the human in the watcher terminal:
+        // 🔴 HIGH needs a typed override, 🟡/🟢 a y/N answer.
+        const outcome = await requestApproval(auditEntry, ipcDir);
+
+        if (risk.level === 'high' && outcome !== 'approved') {
+          auditEntry.decision = outcome === 'rejected' ? 'user_rejected' : 'blocked';
           writeAuditEntry(auditEntry, auditDir);
-          publishEvent(auditEntry, ipcDir);
+          if (outcome === 'no-watcher') publishEvent(auditEntry, ipcDir);
           logActivityFromReport('check_migration', report, auditDir);
 
           // Compute suggested safe rewrite
@@ -131,7 +134,7 @@ export function runMcpTools(server: McpServer) {
                 guardian: {
                   risk: risk.level,
                   decision: 'blocked',
-                  message: `🔴 BLOCKED by Migration Guardian. ${risk.errorCount} blocking error(s) detected. Fix the violations before proceeding.`,
+                  message: highRiskBlockedMessage(risk.errorCount, outcome),
                   auto_fix: fixResult.fixed ? {
                     available: true,
                     suggested_safe_sql: fixResult.fixedSql,
@@ -145,16 +148,8 @@ export function runMcpTools(server: McpServer) {
           };
         }
 
-        // 🟡 MEDIUM / 🟢 LOW: Send to CLI watch terminal for user approval
-        auditEntry.decision = 'pending';
-        writePendingApproval(auditEntry, ipcDir);
-
-        // Wait for the user to approve or reject in the CLI (up to 2 minutes)
-        const approved = await waitForDecision(auditId, 120_000, ipcDir);
-        removePendingApproval(auditId, ipcDir);
-
-        if (approved === true) {
-          auditEntry.decision = 'user_approved';
+        if (outcome === 'approved') {
+          auditEntry.decision = risk.level === 'high' ? 'user_override' : 'user_approved';
           writeAuditEntry(auditEntry, auditDir);
           logActivityFromReport('check_migration', report, auditDir);
 
@@ -162,11 +157,13 @@ export function runMcpTools(server: McpServer) {
             ...report,
             guardian: {
               risk: risk.level,
-              decision: 'user_approved',
-              message: `✅ Approved by user. Migration passed guardian review.`,
+              decision: auditEntry.decision,
+              message: risk.level === 'high'
+                ? '⚠️ HIGH RISK OVERRIDDEN: the user typed "override" in the Migration Guardian terminal to allow this despite blocking errors.'
+                : `✅ Approved by user. Migration passed guardian review.`,
             },
             destructiveActionRequired:
-              report.hasDestructive && !confirm_destructive
+              report.hasDestructive && !confirm_destructive && risk.level !== 'high'
                 ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP TABLE or DROP COLUMN) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP TABLE/COLUMN). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
                 : undefined,
           };
@@ -177,28 +174,26 @@ export function runMcpTools(server: McpServer) {
               text: JSON.stringify(responseData, null, 2),
             }],
           };
-        } else {
-          // User rejected or timed out
-          auditEntry.decision = approved === false ? 'user_rejected' : 'user_rejected';
-          writeAuditEntry(auditEntry, auditDir);
-
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                passed: false,
-                guardian: {
-                  risk: risk.level,
-                  decision: 'user_rejected',
-                  message: approved === null
-                    ? '⏰ Migration timed out waiting for user approval (2 min). Rejected by default.'
-                    : '❌ Migration was rejected by the user in the CLI.',
-                },
-              }, null, 2),
-            }],
-            isError: true,
-          };
         }
+
+        // 🟡 / 🟢 not approved: rejected, timed out, or nobody watching
+        auditEntry.decision = 'user_rejected';
+        writeAuditEntry(auditEntry, auditDir);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              passed: false,
+              guardian: {
+                risk: risk.level,
+                decision: outcome === 'no-watcher' ? 'awaiting_watcher' : 'user_rejected',
+                message: notApprovedMessage(outcome),
+              },
+            }, null, 2),
+          }],
+          isError: true,
+        };
       } catch (err) {
         return {
           content: [{
@@ -214,7 +209,7 @@ export function runMcpTools(server: McpServer) {
   // ── Tool 2: analyze_migration ────────────────────────────────────
   server.tool(
     'analyze_migration',
-    'Static analysis only — check migration SQL against 10 safety rules without executing. No Docker or database required. HIGH risk queries are auto-blocked. Others require user approval.',
+    'Static analysis only — check migration SQL against 10 safety rules without executing. No Docker or database required. HIGH risk queries are blocked unless the user overrides them in the Migration Guardian terminal. Others require user approval there.',
     {
       migration_sql: z
         .string()
@@ -262,11 +257,13 @@ export function runMcpTools(server: McpServer) {
           warningCount: risk.warningCount,
         };
 
-        // 🔴 HIGH: Auto-block
-        if (risk.level === 'high') {
-          auditEntry.decision = 'blocked';
+        const outcome = await requestApproval(auditEntry, ipcDir);
+
+        // 🔴 HIGH: blocked unless the user typed "override" in the terminal
+        if (risk.level === 'high' && outcome !== 'approved') {
+          auditEntry.decision = outcome === 'rejected' ? 'user_rejected' : 'blocked';
           writeAuditEntry(auditEntry, auditDir);
-          publishEvent(auditEntry, ipcDir);
+          if (outcome === 'no-watcher') publishEvent(auditEntry, ipcDir);
           logActivityFromReport('analyze_migration', report, auditDir);
 
           return {
@@ -277,7 +274,7 @@ export function runMcpTools(server: McpServer) {
                 guardian: {
                   risk: risk.level,
                   decision: 'blocked',
-                  message: `🔴 BLOCKED by Migration Guardian. ${risk.errorCount} blocking error(s) detected.`,
+                  message: highRiskBlockedMessage(risk.errorCount, outcome),
                 },
               }, null, 2),
             }],
@@ -285,13 +282,8 @@ export function runMcpTools(server: McpServer) {
           };
         }
 
-        // 🟡 MEDIUM / 🟢 LOW: Wait for user approval
-        writePendingApproval(auditEntry, ipcDir);
-        const approved = await waitForDecision(auditId, 120_000, ipcDir);
-        removePendingApproval(auditId, ipcDir);
-
-        if (approved === true) {
-          auditEntry.decision = 'user_approved';
+        if (outcome === 'approved') {
+          auditEntry.decision = risk.level === 'high' ? 'user_override' : 'user_approved';
           writeAuditEntry(auditEntry, auditDir);
           logActivityFromReport('analyze_migration', report, auditDir);
 
@@ -302,33 +294,33 @@ export function runMcpTools(server: McpServer) {
                 ...report,
                 guardian: {
                   risk: risk.level,
-                  decision: 'user_approved',
-                  message: `✅ Approved by user.`,
+                  decision: auditEntry.decision,
+                  message: risk.level === 'high'
+                    ? '⚠️ HIGH RISK OVERRIDDEN: the user typed "override" in the Migration Guardian terminal.'
+                    : `✅ Approved by user.`,
                 },
               }, null, 2),
             }],
-          };
-        } else {
-          auditEntry.decision = 'user_rejected';
-          writeAuditEntry(auditEntry, auditDir);
-
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                passed: false,
-                guardian: {
-                  risk: risk.level,
-                  decision: 'user_rejected',
-                  message: approved === null
-                    ? '⏰ Timed out waiting for user approval.'
-                    : '❌ Rejected by user.',
-                },
-              }, null, 2),
-            }],
-            isError: true,
           };
         }
+
+        auditEntry.decision = 'user_rejected';
+        writeAuditEntry(auditEntry, auditDir);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              passed: false,
+              guardian: {
+                risk: risk.level,
+                decision: outcome === 'no-watcher' ? 'awaiting_watcher' : 'user_rejected',
+                message: notApprovedMessage(outcome),
+              },
+            }, null, 2),
+          }],
+          isError: true,
+        };
       } catch (err) {
         return {
           content: [{
@@ -407,31 +399,36 @@ export function runMcpTools(server: McpServer) {
             (v) => v.severity === 'error'
           );
 
-          // 🔴 HIGH RISK: Hard block
-          if (blockingErrors.length > 0) {
+          const applyAudit: AuditEntry = {
+            id: auditId,
+            timestamp: new Date().toISOString(),
+            tool: 'apply_migration',
+            project: projectDir,
+            risk: blockingErrors.length > 0 ? 'high' : risk.level,
+            decision: 'pending',
+            query: migration_sql,
+            violations: preCheckReport.violations.map((v) => ({
+              ruleId: v.ruleId,
+              severity: v.severity,
+              message: v.message,
+              line: v.line,
+            })),
+            errorCount: risk.errorCount,
+            warningCount: risk.warningCount,
+          };
+
+          // Every apply is shown in the watcher terminal; 🔴 needs a typed override
+          const outcome = await requestApproval(applyAudit, ipcDir);
+
+          // 🔴 HIGH RISK: blocked unless the user typed "override" in the terminal
+          if (blockingErrors.length > 0 && outcome !== 'approved') {
             const violationSummary = blockingErrors
               .map((v) => `[${v.ruleId}] ${v.message} (Line ${v.line})`)
               .join('; ');
 
-            const blockedEntry: AuditEntry = {
-              id: auditId,
-              timestamp: new Date().toISOString(),
-              tool: 'apply_migration',
-              project: projectDir,
-              risk: 'high',
-              decision: 'blocked',
-              query: migration_sql,
-              violations: blockingErrors.map((v) => ({
-                ruleId: v.ruleId,
-                severity: v.severity,
-                message: v.message,
-                line: v.line,
-              })),
-              errorCount: blockingErrors.length,
-              warningCount: 0,
-            };
-            writeAuditEntry(blockedEntry, auditDir);
-            publishEvent(blockedEntry, ipcDir);
+            applyAudit.decision = outcome === 'rejected' ? 'user_rejected' : 'blocked';
+            writeAuditEntry(applyAudit, auditDir);
+            if (outcome === 'no-watcher') publishEvent(applyAudit, ipcDir);
 
             const fixResult = fixMigrationSql(migration_sql, blockingErrors);
 
@@ -441,6 +438,7 @@ export function runMcpTools(server: McpServer) {
                 text: JSON.stringify({
                   success: false,
                   error: `SECURITY GATE REJECTION: Cannot apply migration. Detected ${blockingErrors.length} blocking violation(s): ${violationSummary}`,
+                  guardian_message: highRiskBlockedMessage(blockingErrors.length, outcome),
                   violations: blockingErrors,
                   auto_fix: fixResult.fixed ? {
                     available: true,
@@ -454,30 +452,8 @@ export function runMcpTools(server: McpServer) {
             };
           }
 
-          // 🟡 MEDIUM / 🟢 LOW: Send to CLI for approval
-          const applyAudit: AuditEntry = {
-            id: auditId,
-            timestamp: new Date().toISOString(),
-            tool: 'apply_migration',
-            project: projectDir,
-            risk: risk.level,
-            decision: 'pending',
-            query: migration_sql,
-            violations: preCheckReport.violations.map((v) => ({
-              ruleId: v.ruleId,
-              severity: v.severity,
-              message: v.message,
-              line: v.line,
-            })),
-            errorCount: risk.errorCount,
-            warningCount: risk.warningCount,
-          };
-
-          writePendingApproval(applyAudit, ipcDir);
-          const approved = await waitForDecision(auditId, 120_000, ipcDir);
-          removePendingApproval(auditId, ipcDir);
-
-          if (approved !== true) {
+          // 🟡 MEDIUM / 🟢 LOW not approved
+          if (outcome !== 'approved') {
             applyAudit.decision = 'user_rejected';
             writeAuditEntry(applyAudit, auditDir);
 
@@ -488,10 +464,8 @@ export function runMcpTools(server: McpServer) {
                   success: false,
                   guardian: {
                     risk: risk.level,
-                    decision: 'user_rejected',
-                    message: approved === null
-                      ? '⏰ Timed out waiting for user approval.'
-                      : '❌ Rejected by user in the CLI.',
+                    decision: outcome === 'no-watcher' ? 'awaiting_watcher' : 'user_rejected',
+                    message: notApprovedMessage(outcome),
                   },
                 }, null, 2),
               }],
@@ -499,7 +473,7 @@ export function runMcpTools(server: McpServer) {
             };
           }
 
-          applyAudit.decision = 'user_approved';
+          applyAudit.decision = blockingErrors.length > 0 ? 'user_override' : 'user_approved';
           writeAuditEntry(applyAudit, auditDir);
         } finally {
           try {
@@ -619,4 +593,33 @@ async function resolveStorage(server: McpServer, projectDirArg?: string): Promis
     }
   }
   return { projectDir, auditDir: getLogDir(projectDir), ipcDir: getGlobalLogDir() };
+}
+
+/**
+ * Message for a 🔴 HIGH risk query that was not overridden.
+ */
+function highRiskBlockedMessage(errorCount: number, outcome: ApprovalOutcome): string {
+  const base = `🔴 BLOCKED by Migration Guardian. ${errorCount} blocking error(s) detected. Fix the violations before proceeding.`;
+  switch (outcome) {
+    case 'rejected':
+      return `${base} The user reviewed it in the Migration Guardian terminal and kept it blocked.`;
+    case 'timeout':
+      return `${base} The user did not override it in the Migration Guardian terminal within 2 minutes.`;
+    default:
+      return `${base} Only the user can override a HIGH risk block, from the Migration Guardian terminal (npx mgcheck).`;
+  }
+}
+
+/**
+ * Message for a 🟡/🟢 query that was not approved.
+ */
+function notApprovedMessage(outcome: ApprovalOutcome): string {
+  switch (outcome) {
+    case 'no-watcher':
+      return '⏸️ Not run: no Migration Guardian terminal is open, so nobody can approve this. Ask the user to run `npx mgcheck` in a terminal, then call this tool again.';
+    case 'timeout':
+      return '⏰ No answer in the Migration Guardian terminal within 2 minutes. Rejected by default.';
+    default:
+      return '❌ Rejected by the user in the Migration Guardian terminal.';
+  }
 }

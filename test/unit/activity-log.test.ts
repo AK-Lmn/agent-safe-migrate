@@ -209,8 +209,9 @@ describe('MCP tool storage routing', () => {
   });
 
   it('routes approval requests through the global queue and logs the decision per project', async () => {
-    const { getGlobalLogDir, readPendingApprovals, writeDecision } = await import('../../src/core/activity-log.js');
+    const { getGlobalLogDir, readPendingApprovals, writeDecision, startWatcherHeartbeat } = await import('../../src/core/activity-log.js');
     const ipcDir = getGlobalLogDir();
+    const stopHeartbeat = startWatcherHeartbeat(ipcDir);
     const tool = await getTool('analyze_migration');
 
     const pending = tool.handler({
@@ -228,9 +229,73 @@ describe('MCP tool storage routing', () => {
     writeDecision(request!.id, true, ipcDir);
 
     const response = await pending;
+    stopHeartbeat();
     expect(response.isError).toBeFalsy();
     const entries = readAuditLog({ path: join(projectDir, '.mgcheck', 'audit.jsonl') });
     expect(entries.map((e) => e.decision)).toEqual(['user_approved']);
+  });
+
+  /** Run a tool while a simulated watcher answers the first request it sees. */
+  async function runWithWatcher(toolName: string, args: Record<string, unknown>, answer: boolean) {
+    const { getGlobalLogDir, readPendingApprovals, writeDecision, startWatcherHeartbeat } = await import('../../src/core/activity-log.js');
+    const ipcDir = getGlobalLogDir();
+    const stopHeartbeat = startWatcherHeartbeat(ipcDir);
+    try {
+      const tool = await getTool(toolName);
+      const pending = tool.handler({ ...args, project_dir: projectDir });
+      let request: AuditEntry | undefined;
+      for (let i = 0; i < 100 && !request; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        request = readPendingApprovals(ipcDir).find((e) => e.project === projectDir);
+      }
+      expect(request).toBeDefined();
+      writeDecision(request!.id, answer, ipcDir);
+      return { request: request!, response: await pending };
+    } finally {
+      stopHeartbeat();
+    }
+  }
+
+  it('shows HIGH risk queries in the watcher and lets the user override them', async () => {
+    const { request, response } = await runWithWatcher('analyze_migration', { migration_sql: 'DROP TABLE customers;' }, true);
+    expect(request.risk).toBe('high');
+    expect(response.isError).toBeFalsy();
+    expect(JSON.parse(response.content[0].text).guardian.decision).toBe('user_override');
+    const entries = readAuditLog({ path: join(projectDir, '.mgcheck', 'audit.jsonl') });
+    expect(entries.map((e) => e.decision)).toEqual(['user_override']);
+  });
+
+  it('keeps HIGH risk queries blocked when the user does not override', async () => {
+    const { response } = await runWithWatcher('analyze_migration', { migration_sql: 'DROP TABLE customers;' }, false);
+    expect(response.isError).toBe(true);
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.guardian.decision).toBe('blocked');
+    expect(parsed.guardian.message).toContain('kept it blocked');
+  });
+
+  it('answers MEDIUM/LOW immediately when no watcher terminal is running', async () => {
+    const tool = await getTool('analyze_migration');
+    const started = Date.now();
+    const response = await tool.handler({
+      migration_sql: 'CREATE INDEX CONCURRENTLY idx_users ON users (email);',
+      project_dir: projectDir,
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(response.isError).toBe(true);
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.guardian.decision).toBe('awaiting_watcher');
+    expect(parsed.guardian.message).toContain('npx mgcheck');
+  });
+
+  it('treats a stale heartbeat as no watcher', async () => {
+    const { getGlobalLogDir, isWatcherActive } = await import('../../src/core/activity-log.js');
+    const ipcDir = getGlobalLogDir();
+    mkdirSync(ipcDir, { recursive: true });
+    writeFileSync(join(ipcDir, 'watcher.json'), JSON.stringify({ pid: process.pid, updatedAt: Date.now() - 60_000 }), 'utf-8');
+    expect(isWatcherActive(ipcDir)).toBe(false);
+    writeFileSync(join(ipcDir, 'watcher.json'), JSON.stringify({ pid: process.pid, updatedAt: Date.now() }), 'utf-8');
+    expect(isWatcherActive(ipcDir)).toBe(true);
+    rmSync(join(ipcDir, 'watcher.json'), { force: true });
   });
 });
 

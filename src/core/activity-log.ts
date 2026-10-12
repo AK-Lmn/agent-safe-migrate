@@ -133,7 +133,7 @@ export interface AuditEntry {
   /** Risk classification */
   risk: RiskLevel;
   /** What happened */
-  decision: 'blocked' | 'user_approved' | 'user_rejected' | 'auto_allowed' | 'pending';
+  decision: 'blocked' | 'user_approved' | 'user_override' | 'user_rejected' | 'auto_allowed' | 'pending';
   /** The full SQL query attempted */
   query: string;
   /** Violations found */
@@ -296,6 +296,66 @@ export async function waitForDecision(id: string, timeoutMs: number = 120_000, t
   }
   // Timed out — treat as rejected
   return null;
+}
+
+// ── Watcher Heartbeat & Approval Requests ─────────────────────────
+
+const HEARTBEAT_FILE = 'watcher.json';
+const HEARTBEAT_INTERVAL_MS = 2_000;
+const HEARTBEAT_STALE_MS = 6_000;
+
+/**
+ * Called by the `mgcheck setup` watcher: periodically records that a human is
+ * watching, so MCP tools know whether asking for approval can get an answer.
+ * Returns a stop function that removes the heartbeat.
+ */
+export function startWatcherHeartbeat(targetDir: string = getGlobalLogDir()): () => void {
+  ensureDirs(targetDir);
+  const file = join(targetDir, HEARTBEAT_FILE);
+  const beat = () => {
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, updatedAt: Date.now() }), 'utf-8');
+    } catch { /* retry on next beat */ }
+  };
+  beat();
+  const interval = setInterval(beat, HEARTBEAT_INTERVAL_MS);
+  return () => {
+    clearInterval(interval);
+    try { unlinkSync(file); } catch { /* already gone */ }
+  };
+}
+
+/**
+ * True when a watcher terminal is running and can answer approval requests.
+ */
+export function isWatcherActive(targetDir: string = getGlobalLogDir()): boolean {
+  try {
+    const { pid, updatedAt } = JSON.parse(readFileSync(join(targetDir, HEARTBEAT_FILE), 'utf-8'));
+    if (Date.now() - updatedAt > HEARTBEAT_STALE_MS) return false;
+    process.kill(pid, 0); // throws if the process no longer exists
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type ApprovalOutcome = 'approved' | 'rejected' | 'timeout' | 'no-watcher';
+
+/**
+ * Ask the human in the watcher terminal to decide on an entry.
+ * Returns immediately with 'no-watcher' when nobody is watching.
+ */
+export async function requestApproval(
+  entry: AuditEntry,
+  targetDir: string = getGlobalLogDir(),
+  timeoutMs: number = 120_000
+): Promise<ApprovalOutcome> {
+  if (!isWatcherActive(targetDir)) return 'no-watcher';
+  writePendingApproval({ ...entry, decision: 'pending' }, targetDir);
+  const decision = await waitForDecision(entry.id, timeoutMs, targetDir);
+  removePendingApproval(entry.id, targetDir);
+  if (decision === true) return 'approved';
+  return decision === false ? 'rejected' : 'timeout';
 }
 
 // ── Legacy Activity Log (backward compat) ─────────────────────────
@@ -490,6 +550,7 @@ export function formatAuditEntry(entry: AuditEntry): string {
     blocked: chalk.red('AUTO-BLOCKED'),
     user_approved: chalk.green('APPROVED'),
     user_rejected: chalk.red('REJECTED'),
+    user_override: chalk.magenta('OVERRIDDEN BY USER'),
     auto_allowed: chalk.green('ALLOWED'),
     pending: chalk.yellow('PENDING'),
   };

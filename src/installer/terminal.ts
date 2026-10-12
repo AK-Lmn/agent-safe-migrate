@@ -2,6 +2,7 @@ import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import chalk from 'chalk';
 import type { SetupOptions } from './index.js';
+import type { AuditEntry } from '../core/activity-log.js';
 import { detectClients, setupMcp, uninstallMcp, findConnections, CLIENT_FLAGS } from './index.js';
 
 /**
@@ -86,12 +87,15 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   console.log(chalk.bold.green('\n  🎉 Migration Guardian is ready!'));
   console.log(chalk.white('  Your AI assistant will now automatically check migrations before executing.\n'));
   console.log(chalk.dim('  Behavior:'));
-  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Auto-blocked (AI receives error, shown here)'));
-  console.log(chalk.dim('  • 🟡 MEDIUM risk queries → You will be asked to approve/reject'));
-  console.log(chalk.dim('  • 🟢 LOW risk queries    → You will be asked to approve/reject\n'));
+  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Blocked. Shown here; type "override" to allow one anyway'));
+  console.log(chalk.dim('  • 🟡 MEDIUM risk queries → Shown here; approve or reject with y/N'));
+  console.log(chalk.dim('  • 🟢 LOW risk queries    → Shown here; approve or reject with y/N'));
+  console.log(chalk.dim('  • Keep this terminal open: without it, AI agents cannot get approval\n'));
 
   const {
     watchPendingApprovals,
+    readPendingApprovals,
+    startWatcherHeartbeat,
     writeDecision,
     removePendingApproval,
     clearActivityLog,
@@ -116,6 +120,10 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
 
   const rl = readline.createInterface({ input, output });
 
+  // Tell MCP tools a human is here to answer approval requests
+  const stopHeartbeat = startWatcherHeartbeat(ipcDir);
+  process.on('exit', stopHeartbeat);
+
   // Clear old log entries so they don't replay on startup
   clearActivityLog();
 
@@ -128,7 +136,21 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     console.log('');
   }, ipcDir);
 
-  const stopWatching = watchPendingApprovals(async (entry) => {
+  // Requests are answered one at a time, so prompts never overlap
+  let queue: Promise<void> = Promise.resolve();
+  const stopWatching = watchPendingApprovals((entry) => {
+    queue = queue
+      .then(() => reviewRequest(entry))
+      .catch((err) => console.error(chalk.red(`  ⚠  Could not show request ${entry.id}: ${(err as Error).message}`)));
+  }, ipcDir);
+
+  async function reviewRequest(entry: AuditEntry): Promise<void> {
+    // The agent stops waiting after 2 minutes; skip requests that expired in the queue
+    if (!readPendingApprovals(ipcDir).some((p) => p.id === entry.id)) {
+      console.log(chalk.dim(`  (request ${entry.id} expired before it could be reviewed)\n`));
+      return;
+    }
+
     // ── Rich Human-Readable Audit Display ──────────────────────
     const riskColors: Record<string, (s: string) => string> = {
       high: chalk.red,
@@ -141,7 +163,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
       low: '🟢',
     };
     const riskExplanation: Record<string, string> = {
-      high: 'Contains blocking errors — will be auto-rejected unless fixed',
+      high: 'Contains blocking errors — stays blocked unless you type "override"',
       medium: 'Contains warnings — review carefully before approving',
       low: 'No violations found — looks safe',
     };
@@ -225,18 +247,30 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     console.log('');
 
     // ── Prompt for Decision ─────────────────────────────────────
+    // 🔴 HIGH needs a typed word so a stray "y" or Enter can never let it through
+    const isHigh = entry.risk === 'high';
     try {
-      const answer = await rl.question(
-        color(`  ➜ Allow this ${entry.risk.toUpperCase()} risk migration? `) +
-        chalk.dim('[y/N] ')
-      );
+      const answer = isHigh
+        ? await rl.question(
+            chalk.red.bold('  🔴 BLOCKED as HIGH risk. ') +
+            chalk.white('Type ') + chalk.red.bold('override') +
+            chalk.white(' to allow it anyway, or press Enter to keep it blocked: ')
+          )
+        : await rl.question(
+            color(`  ➜ Allow this ${entry.risk.toUpperCase()} risk migration? `) +
+            chalk.dim('[y/N] ')
+          );
       const trimmed = answer.trim().toLowerCase();
-      const approved = trimmed === 'y' || trimmed === 'yes';
+      const approved = isHigh ? trimmed === 'override' : trimmed === 'y' || trimmed === 'yes';
 
       writeDecision(entry.id, approved, ipcDir);
       removePendingApproval(entry.id, ipcDir);
 
-      if (approved) {
+      if (isHigh) {
+        console.log(approved
+          ? chalk.magenta.bold('  ⚠️  Overridden — you allowed a HIGH risk migration. The AI agent may proceed.\n')
+          : chalk.red('  🛑 Kept blocked — the AI agent was told to fix the violations.\n'));
+      } else if (approved) {
         console.log(chalk.green('  ✅ Approved — AI agent may proceed.\n'));
       } else {
         console.log(chalk.red('  ❌ Rejected — AI agent received error.\n'));
@@ -249,7 +283,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
       writeDecision(entry.id, false, ipcDir);
       removePendingApproval(entry.id, ipcDir);
     }
-  }, ipcDir);
+  }
 
   // Keep the process alive with an active interval timer
   const keepAlive = setInterval(() => {}, 1000 * 60 * 60);
@@ -259,6 +293,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     clearInterval(keepAlive);
     stopWatching();
     stopEvents();
+    stopHeartbeat();
     rl.close();
     console.log(chalk.dim('\n  Migration Guardian stopped. Goodbye! 👋\n'));
     process.exit(0);

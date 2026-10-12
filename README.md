@@ -40,7 +40,7 @@ You can roll back application code in seconds. A bad schema migration is much ha
  ② Shadow DB run   ──── runs the migration on a disposable Postgres (PGlite or Docker)
          │
          ▼
- ③ Human gate      ──── 🔴 high risk: auto-blocked · 🟡/🟢 asks you to approve
+ ③ Human gate      ──── shown in your terminal · 🟡/🟢 approve with y/N · 🔴 blocked unless you type "override"
          │
          ▼
  ④ Apply           ──── runs on your real DB only after it is verified and you approve
@@ -67,7 +67,7 @@ npx mgcheck run ./migrations --provider pglite # check + run on an in-process sh
 
 | Command | What it does |
 | :--- | :--- |
-| `mgcheck` · `mgcheck setup` | Setup wizard: detects AI agents, configures MCP, then watches for approval requests |
+| `mgcheck` · `mgcheck setup` | Setup wizard: detects AI agents, configures MCP, then stays open as the approval terminal (keep it running) |
 | `mgcheck analyze <path>` | Static AST check against the 10 rules (no database needed) |
 | `mgcheck run <path>` | AST check + run on a shadow DB, and optionally apply to the real DB |
 | `mgcheck fix <path>` | Auto-rewrite unsafe SQL into zero-downtime form, verified on the shadow DB |
