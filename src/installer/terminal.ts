@@ -138,7 +138,7 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     chalk.dim('(shift+tab to cycle) · type /auto or /manual\n')
   );
 
-  const rl = readline.createInterface({ input, output });
+  const rl = readline.createInterface({ input, output, prompt: '' });
 
   // Mode switching state and handlers
   let isPromptActive = false;
@@ -218,9 +218,34 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
       .catch((err) => console.error(chalk.red(`  ⚠  Could not show request ${entry.id}: ${(err as Error).message}`)));
   }, ipcDir);
 
+  function wrapText(text: string, maxLen = 66): string[] {
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let current = '';
+
+    for (const word of words) {
+      if (!word) continue;
+      if (!current) {
+        current = word;
+      } else if ((current + ' ' + word).length <= maxLen) {
+        current += ' ' + word;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+    return lines;
+  }
+
   async function reviewRequest(entry: AuditEntry): Promise<void> {
     isPromptActive = true;
     try {
+    // Clear any stray prompt or character from the current line
+    if (process.stdout.isTTY) {
+      process.stdout.write('\r\x1b[K');
+    }
+
     // The agent stops waiting after 2 minutes; skip requests that expired in the queue
     if (!readPendingApprovals(ipcDir).some((p) => p.id === entry.id)) {
       console.log(chalk.dim(`  (request ${entry.id} expired before it could be reviewed)\n`));
@@ -294,7 +319,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
         const sevIcon = v.severity === 'error' ? chalk.red.bold('✗ ERROR  ') : chalk.yellow.bold('⚠ WARNING');
         const lineInfo = v.line != null ? chalk.dim(` (line ${v.line})`) : '';
         console.log(chalk.dim('  │  ') + sevIcon + chalk.dim(` [${v.ruleId}]`) + lineInfo);
-        console.log(chalk.dim('  │    ') + chalk.white(v.message));
+        for (const line of wrapText(v.message, 66)) {
+          console.log(chalk.dim('  │    ') + chalk.white(line));
+        }
       }
       console.log(chalk.dim('  │'));
 
@@ -345,7 +372,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
           const sevIcon = v.severity === 'error' ? chalk.red.bold('✗ ERROR  ') : chalk.yellow.bold('⚠ WARNING');
           const lineInfo = v.line != null ? chalk.dim(` (line ${v.line})`) : '';
           console.log(chalk.dim('  │  ') + sevIcon + chalk.dim(` [${v.ruleId}]`) + lineInfo);
-          console.log(chalk.dim('  │    ') + chalk.white(v.message));
+          for (const line of wrapText(v.message, 66)) {
+            console.log(chalk.dim('  │    ') + chalk.white(line));
+          }
           console.log(chalk.dim('  │'));
         }
       } else {
