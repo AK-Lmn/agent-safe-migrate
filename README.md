@@ -1,10 +1,13 @@
 # 🛡️ Migration Guardian (`mgcheck`)
 
-> **Catch unsafe PostgreSQL migrations before they lock production, whether a human or an AI agent wrote them.**
+> **Catch unsafe PostgreSQL migrations before they lock production, whether written by a human or an AI agent.**
 
 [![npm version](https://img.shields.io/npm/v/mgcheck.svg?color=blue)](https://www.npmjs.com/package/mgcheck)
+[![npm downloads](https://img.shields.io/npm/dm/mgcheck.svg?color=blue)](https://www.npmjs.com/package/mgcheck)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/Aditya31032006/agent-safe-migrate/ci.yml?branch=main)](https://github.com/Aditya31032006/agent-safe-migrate/actions)
+[![Node](https://img.shields.io/badge/Node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg)](https://www.typescriptlang.org/)
 
 ```bash
 npx mgcheck
@@ -12,199 +15,366 @@ npx mgcheck
 
 ---
 
-## 🧭 Why this exists
+## 🧭 Why Migration Guardian?
 
-### The problem
+### The Problem
+You can roll back application code in seconds. **A bad schema migration can take down your production database in milliseconds.**
 
-You can roll back application code in seconds. A bad schema migration is much harder to undo.
+- **Lock-Queue Pileups:** `ALTER TABLE` and standard `CREATE INDEX` acquire `ACCESS EXCLUSIVE` locks. Even when an operation finishes in seconds, existing long-running transactions block it—and every subsequent read and write queues up behind it until connection pools saturate and services crash.
+- **AI Coding Agents Generate Risky DDL:** Tools like Claude Code, Cursor, Copilot, and Windsurf understand intended schemas ("add unique index on email"), but lack awareness of table cardinality and Postgres locking semantics:
+  ```sql
+  -- ❌ What AI coding agents commonly write:
+  CREATE INDEX idx_users_email ON users(email);
 
-- **Lock queue pile-ups.** `ALTER TABLE` and plain `CREATE INDEX` take heavy locks. While a migration waits for its lock, Postgres queues every new query behind it. The connection pool fills up and the app goes down, even though the SQL itself was valid.
-- **AI agents write migrations now.** Cursor, Claude Code, Copilot and Windsurf understand what you want ("add an index on email"). They don't know how big the table is or how Postgres locks work, so they make the same mistakes over and over:
-  - `CREATE INDEX` without `CONCURRENTLY`, which blocks writes
-  - `ALTER COLUMN TYPE`, which rewrites the whole table under an exclusive lock
-  - no `lock_timeout`
-  - `DROP`s that nobody approved
-- **Reviews miss these.** The SQL looks fine in a diff. The danger only shows up at deploy time, on real data.
+  -- 💥 Production consequence:
+  -- Takes an exclusive table lock. Writes block immediately.
+  -- Under moderate traffic, connection pool exhausts within seconds.
+  ```
+- **Code Reviews Miss Them:** The syntax is valid SQL, passes local tests with 10 rows, and looks benign in a pull request diff. The catastrophe only strikes in staging or production.
 
-### The solution
-
-`mgcheck` adds a verification gate between your migration and your database:
+### The Solution
+`mgcheck` acts as an automated, multi-tiered safety gate between migration authoring and database execution:
 
 ```
- AI agent / developer
-         │
-         ▼
- ① AST rule check  ──── real Postgres parser (WASM) + 10 zero-downtime rules
-         │
-         ▼
- ② Shadow DB run   ──── runs the migration on a disposable Postgres (PGlite or Docker)
-         │
-         ▼
- ③ Human gate      ──── shown in your terminal · 🟡/🟢 approve with y/N · 🔴 blocked unless you type "override"
-         │
-         ▼
- ④ Apply           ──── runs on your real DB only after it is verified and you approve
+                      AI Agent / Developer
+                               │
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ ① AST Safety Rules (PostgreSQL C-Parser via WASM)       │
+  │    • 10 zero-downtime rules (lock types, table rewrites) │
+  └────────────────────────────┬────────────────────────────┘
+                               │
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ ② Ephemeral Shadow Database                             │
+  │    • Runs migration on in-process PGlite (WASM) or      │
+  │      disposable Docker PostgreSQL (port 0, ephemeral)   │
+  └────────────────────────────┬────────────────────────────┘
+                               │
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ ③ Approval Watcher & Permission Gate                    │
+  │    • 🟢 LOW: Auto-approved                              │
+  │    • 🟡 MEDIUM: Auto-retry safe rewrite / [y/N] prompt   │
+  │    • 🔴 HIGH: Strictly blocked (requires "override")    │
+  └────────────────────────────┬────────────────────────────┘
+                               │
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ ④ Real Target Database Application                      │
+  │    • Verified DDL applied directly to target database   │
+  │    • Full tamper-evident audit log in .mgcheck/audit    │
+  └─────────────────────────────────────────────────────────┘
 ```
 
-- **Auto-fix:** rewrites unsafe SQL into zero-downtime patterns and checks the rewrite on the shadow DB.
-- **MCP server:** 13 AI agents call `check_migration`, `analyze_migration` and `apply_migration` as tools.
-- **Audit trail:** every intercepted query is logged to `<project>/.mgcheck/audit.jsonl`.
-- **Git hook and CI gate:** unsafe `.sql` files are stopped before they're committed or merged.
+---
+
+## ✨ Features
+
+- 🔬 **Real PostgreSQL Parser:** Uses `pgsql-parser` (official PostgreSQL grammar compiled to WebAssembly) to inspect exact AST nodes, statements, and locations without fragile regular expressions.
+- 🧪 **Dual Shadow Database Engine:**
+  - **PGlite (WASM):** Lightweight in-memory PostgreSQL running directly inside Node.js. Zero Docker dependencies required.
+  - **Docker Postgres:** Ephemeral `postgres:16-alpine` container on random ports for full fidelity with native PostgreSQL extensions.
+- 🤖 **Zero-Config MCP Server:** 1-command installer auto-configures 13+ AI assistants (Cursor, Claude Code, Cline, Windsurf, Zed, Antigravity, Copilot, etc.) with `check_migration`, `analyze_migration`, and `apply_migration` tools.
+- 🚦 **Dual Approval Modes (`manual` vs `auto`):** Matches Claude Code's permission model. Switch live anytime in the terminal watcher via `Shift + Tab` or `Shift + Enter`.
+- 🔄 **Autonomous Agent Retry Loop:** In `auto` mode, warning-level migrations prompt the agent to generate zero-warning safe rewrites before auto-approving.
+- 🔒 **Safe Target Applier:** Pre-verifies migrations against AST safety rules and shadow execution before prompting to execute against production or staging databases.
+- 🪝 **Pre-Commit Hook & CI Gate:** Catch dangerous DDL at commit time via Git hooks and in CI pipelines via GitHub Actions.
+- 📜 **Full Audit Logging:** Intercepted migrations, risk levels, and approval decisions logged per project to `.mgcheck/audit.jsonl`.
 
 ---
 
 ## ⚡ Quickstart
 
+### 1. Interactive Setup & Watcher
+Run the setup wizard to connect your AI editors and launch the live watcher terminal:
+
 ```bash
-npx mgcheck                                    # detect your AI agents, connect them, start the approval watcher
-npx mgcheck analyze ./migrations               # static check, no database needed
-npx mgcheck run ./migrations --provider pglite # check + run on an in-process shadow Postgres
+npx mgcheck
+```
+
+### 2. Static AST Analysis (No DB Needed)
+Inspect raw `.sql` files or migration folders for dangerous lock patterns:
+
+```bash
+npx mgcheck analyze ./migrations
+```
+
+### 3. Full Shadow DB Verification
+Validate AST safety and execute against an in-memory shadow PostgreSQL:
+
+```bash
+npx mgcheck run ./migrations --provider pglite
+```
+
+### 4. Auto-Fix Unsafe Migrations
+Automatically rewrite unsafe SQL into zero-downtime equivalents:
+
+```bash
+npx mgcheck fix ./migrations/add-index.sql
 ```
 
 ---
 
-## ⌨️ Commands
+## 🖥️ Live Terminal Watcher
 
-| Command | What it does |
+When you run `npx mgcheck` or `mgcheck setup`, the terminal enters **Watcher Mode**. As your AI agent drafts migrations via MCP tools, they stream into your terminal in real time:
+
+```text
+  👁️  Guardian Active — Watching for AI migration activity...
+  ─────────────────────────────────────────────────────────
+  ● manual mode (shift+tab to cycle) · type /auto or /manual
+
+  🔔 Approval Request [HIGH RISK]
+  Client: Cursor (my-web-app)
+  Query:  DROP TABLE "legacy_users";
+  Violations:
+    • [MG006] DROP TABLE is destructive and causes permanent data loss
+  
+  Type "override" to approve this query or press Enter to reject: _
+```
+
+### Hotkey Mode Switcher
+You can toggle between **`auto`** and **`manual`** modes on the fly:
+- Press **`Shift + Tab`** or **`Shift + Enter`** in the watcher terminal.
+- Or type **`/auto`** or **`/manual`** and hit Enter.
+
+---
+
+## 🚦 Approval Modes
+
+| Risk Level | `manual` Mode (Default) | `auto` Mode |
+| :--- | :--- | :--- |
+| 🟢 **LOW** (No violations) | **Auto-Approved** | **Auto-Approved** |
+| 🟡 **MEDIUM** (Warnings only, e.g. missing `lock_timeout`) | **Human Confirmation** (`[y/N]`) | **Autonomous Agent Retry Loop** → Auto-Approved |
+| 🔴 **HIGH** (Blocking errors, e.g. `DROP TABLE`, unindexed rewrites) | **Strictly Blocked** (requires `override`) | **Strictly Blocked** (requires `override`) |
+
+> **Hard Guardrail:** High-risk queries are **never** auto-approved under any configuration. Destructive drops always require human intervention or the `--confirm-destructive` flag.
+
+### Managing Modes via CLI
+```bash
+# View active approval mode and config source
+mgcheck mode
+
+# Set mode globally (~/.mgcheck/settings.json)
+mgcheck mode auto
+
+# Set mode for current project only (.mgcheckrc.json)
+mgcheck mode manual --project
+
+# Restrict auto-approved levels (e.g. only low risk)
+mgcheck mode auto --levels low
+```
+
+---
+
+## ⌨️ CLI Command Reference
+
+| Command | Description |
 | :--- | :--- |
-| `mgcheck` · `mgcheck setup` | Setup wizard: detects AI agents, configures MCP, then stays open as the approval terminal (keep it running) |
-| `mgcheck mode [auto\|manual]` | View or set approval mode (`manual` vs `auto`). Cycle live with `Shift+Tab` in watcher |
-| `mgcheck analyze <path>` | Static AST check against the 10 rules (no database needed) |
-| `mgcheck run <path>` | AST check + run on a shadow DB, and optionally apply to the real DB |
-| `mgcheck fix <path>` | Auto-rewrite unsafe SQL into zero-downtime form, verified on the shadow DB |
-| `mgcheck log` · `mgcheck audit` | View intercepted queries for the current project |
-| `mgcheck hook install \| uninstall` | Add or remove the Git pre-commit hook. It blocks commits with unsafe staged `.sql` files; warnings don't block |
-| `mgcheck hook run` | Check staged `.sql` files now. With Husky or Lefthook, add `npx --yes mgcheck hook run` to your pre-commit hook |
-| `mgcheck mcp` | Start the MCP server (stdio). AI agents launch this themselves |
-| `mgcheck uninstall` | Remove mgcheck from every agent config, rule file and Git hook |
+| `mgcheck` · `mgcheck setup` | Detect AI agents, register MCP server, and launch the approval watcher |
+| `mgcheck mode [auto\|manual]` | Inspect or update approval mode (`--project`, `--levels`) |
+| `mgcheck analyze <path>` | Run fast static AST analysis against 10 safety rules (no database required) |
+| `mgcheck run <path>` | Full verification: AST analysis + shadow DB run + optional target DB apply |
+| `mgcheck fix <path>` | Automatically rewrite unsafe DDL to zero-downtime SQL patterns |
+| `mgcheck log` · `mgcheck audit` | View intercepted query history (`--tail`, `--risk <level>`, `--json`) |
+| `mgcheck hook install \| uninstall` | Install or remove the Git pre-commit hook |
+| `mgcheck hook run` | Run pre-commit check on staged `.sql` files |
+| `mgcheck mcp` | Launch MCP server over `stdio` (managed automatically by AI editors) |
+| `mgcheck uninstall` | Cleanly unregister mgcheck from all AI tools, rule files, and hooks |
 
----
-
-## 🚦 Approval modes
-
-Migration Guardian operates in two approval modes:
-
-- **manual** (default): Safe (🟢 LOW) migrations run automatically. Migrations with warnings (🟡 MEDIUM) or blocking errors (🔴 HIGH) require human confirmation in the watcher terminal.
-- **auto**: Safe (🟢 LOW) and warning (🟡 MEDIUM) migrations run automatically. When fixable warnings are detected, the guardian first guides the AI agent to rewrite them into zero-warning safe SQL. 🔴 HIGH risk queries are **never** auto-approved and require typing `override`.
-
-### Switching modes
+### Common Flags
 ```bash
-mgcheck mode                   # View active mode and source
-mgcheck mode auto              # Set global mode (~/.mgcheck/settings.json)
-mgcheck mode manual --project  # Set project-level mode (.mgcheckrc.json)
-mgcheck mode auto --levels low # Restrict auto mode to LOW risk only
-```
-In the watcher terminal, press **`Shift + Tab`** or **`Shift + Enter`** (or type `/auto` / `/manual`) to cycle modes live on the fly.
-
-<details>
-<summary><b>Useful flags</b></summary>
-
-```bash
-# run
-mgcheck run <path> --provider pglite|docker   # shadow DB engine (default: docker)
-                   --seed schema.sql          # load your existing schema first
-                   --db-url <url>             # use an existing Postgres as the shadow DB
-                   --target-db-url <url> --apply  # apply to the real DB once verified
-                   --fix                      # offer a verified auto-fix if unsafe
-                   --ci                       # JSON output + non-zero exit code on failure
+# Shadow DB & execution options
+mgcheck run <path> --provider pglite|docker     # Choose shadow engine (default: docker)
+                   --seed schema.sql            # Seed existing schema prior to migration
+                   --db-url <url>               # Use external PostgreSQL as shadow instance
+                   --target-db-url <url> --apply# Apply to live database upon verification
+                   --fix                        # Attempt automatic safe rewrite if unsafe
+                   --confirm-destructive        # Allow DROP TABLE / DROP COLUMN statements
+                   --ci                         # Machine-readable output & non-zero exit code
                    --format terminal|json|markdown
-                   --confirm-destructive      # allow DROP TABLE / DROP COLUMN
-
-# setup / uninstall
-mgcheck setup --client cursor|claude-code|cline|zed|...   # one agent only
-mgcheck setup --with-rules        # also write CLAUDE.md, AGENTS.md, .cursorrules, …
-mgcheck uninstall -y              # no confirmation prompt
-mgcheck uninstall --purge         # also delete audit logs and the .gitignore entry
-
-# log
-mgcheck log --tail                # live stream
-mgcheck log --risk high --json    # filter / raw output
-mgcheck log --global              # machine-wide log (~/.mgcheck)
 ```
-</details>
 
 ---
 
-## 🛡️ Safety rules
+## 🛡️ The 10 Safety Rules
 
-| ID | Severity | Catches | Safe pattern |
-| :--- | :---: | :--- | :--- |
-| `MG001` | error | `CREATE INDEX` without `CONCURRENTLY` | `CREATE INDEX CONCURRENTLY` |
-| `MG002` | error | `ALTER COLUMN TYPE` (full table rewrite) | Expand / contract |
-| `MG003` | error | `ADD COLUMN … NOT NULL` with no default | Add a `DEFAULT` |
-| `MG004` | warning | Constraint that scans every row under lock | `NOT VALID`, then `VALIDATE` |
-| `MG005` | error | `DROP COLUMN` | Needs `--confirm-destructive` |
-| `MG006` | error | `DROP TABLE` | Needs `--confirm-destructive` |
-| `MG007` | warning | `RENAME COLUMN` (breaks running code) | Expand / contract |
-| `MG008` | warning | `RENAME TABLE` (breaks running code) | View alias |
-| `MG009` | warning | No `lock_timeout` before risky DDL | `SET lock_timeout = '5s';` |
-| `MG010` | warning | No down migration (skipped for Prisma, Supabase and Drizzle, which have no down step) | Add a rollback file |
+| Rule ID | Severity | Dangerous Pattern | Production Consequence | Zero-Downtime Safe Pattern |
+| :---: | :---: | :--- | :--- | :--- |
+| `MG001` | **error** | `CREATE INDEX` without `CONCURRENTLY` | Blocks all concurrent write transactions on the table. | `CREATE INDEX CONCURRENTLY` |
+| `MG002` | **error** | `ALTER COLUMN TYPE` | Triggers a full table rewrite holding an `ACCESS EXCLUSIVE` lock. | Expand-Contract pattern (add new column, backfill, swap). |
+| `MG003` | **error** | `ADD COLUMN ... NOT NULL` without `DEFAULT` | Fails on existing rows or locks table rewriting rows in Postgres < 11. | Add with `DEFAULT` or add nullable, backfill, then set `NOT NULL`. |
+| `MG004` | **warning** | `ADD CONSTRAINT` without `NOT VALID` | Scans all rows holding a restrictive lock during validation. | Add constraint with `NOT VALID`, followed by `VALIDATE CONSTRAINT`. |
+| `MG005` | **error** | `DROP COLUMN` | Irreversible data loss and breaks running application code. | Requires `--confirm-destructive` and staged deprecation. |
+| `MG006` | **error** | `DROP TABLE` | Irreversible data loss and immediate application downtime. | Requires `--confirm-destructive`. |
+| `MG007` | **warning** | `RENAME COLUMN` | Breaks currently running application queries during blue/green deploy. | Add new column, dual-write, backfill, deprecate old column. |
+| `MG008` | **warning** | `RENAME TABLE` | Immediate breakdown of existing queries during rolling release. | Create a view aliasing the old name, then migrate traffic. |
+| `MG009` | **warning** | Missing `lock_timeout` before DDL | Migration can wait forever in lock queue, starving all other queries. | `SET lock_timeout = '5s';` before table modifications. |
+| `MG010` | **warning** | Missing rollback / down migration | Inability to roll back schema changes cleanly in production. | Provide companion rollback `.down.sql` script. |
 
 ---
 
-## 🤖 Works with
+## 🤖 Supported AI Agents & Frameworks
 
-**AI agents (via MCP):** Google Antigravity · Cursor · Claude Desktop · Claude Code · Cline · Roo Code · Continue.dev · Windsurf · Zed · Goose · Aider · OpenHands · VS Code + Copilot (via the Git hook)
+### 13+ Supported AI Clients (Auto-Configured)
+`mgcheck` automatically detects and configures MCP tools or safety instructions for:
 
-**Migration formats (auto-detected):** Raw SQL · Prisma · Drizzle · Supabase · Flyway · Goose · golang-migrate · dbmate
+- **Google Antigravity**
+- **Cursor**
+- **Claude Code**
+- **Claude Desktop**
+- **Windsurf**
+- **Cline**
+- **Roo Code**
+- **Continue.dev**
+- **Zed**
+- **Goose**
+- **Aider**
+- **OpenHands**
+- **VS Code + GitHub Copilot**
 
-Manual MCP config, for any MCP-capable client:
+#### Manual MCP Configuration
+To manually connect `mgcheck` to any MCP-compliant client:
 
 ```json
 {
   "mcpServers": {
-    "migration-guardian": { "command": "npx", "args": ["-y", "mgcheck", "mcp"] }
+    "migration-guardian": {
+      "command": "npx",
+      "args": ["-y", "mgcheck", "mcp"]
+    }
   }
 }
 ```
 
+### Auto-Detected Migration Frameworks
+`mgcheck` detects directory structures and metadata for:
+- **Raw SQL** (`.sql` files or directories)
+- **Prisma** (`prisma/migrations/*/migration.sql`)
+- **Drizzle** (`drizzle/*.sql` with `meta/_journal.json`)
+- **Supabase** (`supabase/migrations/*.sql`)
+- **Flyway** (`V*__*.sql`)
+- **Goose** (`*__*.sql`)
+- **golang-migrate** (`*.up.sql` / `*.down.sql`)
+- **dbmate** (`db/migrations/*.sql`)
+
 ---
 
-## 🪝 Pre-commit hook
+## 🪝 Git Pre-Commit Hook
+
+Protect your repository from unsafe migrations before commits are made:
 
 ```bash
-npx mgcheck hook install     # once per clone; Husky/Lefthook users add `npx --yes mgcheck hook run` to their own hook
+# Install native pre-commit hook
+npx mgcheck hook install
 ```
 
-- It checks staged `.sql` files with static analysis only, so commits stay fast. **Errors block the commit; warnings don't.**
-- It reads each file **as it is on disk**. If you stage part of a file and leave other edits unstaged, the hook sees the unstaged edits too.
-- It's a fast local check, not a guarantee. It only runs on machines where it's installed, and anyone can skip it with `git commit --no-verify`. Use **CI as the real gate**.
+- Analyzes staged `.sql` files using fast static AST analysis.
+- **Errors block commits; warnings are reported without blocking.**
+- Works seamlessly with **Husky** or **Lefthook**:
+  ```bash
+  # In .husky/pre-commit
+  npx --yes mgcheck hook run
+  ```
 
 ---
 
-## 🔄 CI (GitHub Actions)
+## 🔄 CI / CD Integration (GitHub Actions)
+
+Add `mgcheck` to your pull request workflows to prevent unsafe schema changes from merging:
 
 ```yaml
-- uses: actions/setup-node@v4
-  with: { node-version: 20 }
-- run: npx mgcheck run ./prisma/migrations --ci --provider pglite
+name: Database Migration Check
+
+on:
+  pull_request:
+    paths:
+      - 'migrations/**'
+      - 'prisma/migrations/**'
+      - 'drizzle/**'
+
+jobs:
+  verify-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify Migrations (PGlite WASM)
+        run: npx mgcheck run ./migrations --ci --provider pglite
 ```
 
 ---
 
-## 🗑️ Uninstall
+## ⚙️ Configuration File (`.mgcheckrc.json`)
+
+Configure default behaviors per project:
+
+```json
+{
+  "approvalMode": "auto",
+  "autoApprove": ["low", "medium"],
+  "shadowDb": {
+    "provider": "pglite"
+  },
+  "rules": {
+    "MG009": "warning",
+    "MG010": "off"
+  },
+  "output": {
+    "format": "terminal",
+    "verbose": false
+  }
+}
+```
+
+### Environment Variables
+- `MGCHECK_MODE`: Override approval mode (`auto` or `manual`).
+- `MGCHECK_PROVIDER`: Default shadow database engine (`pglite` or `docker`).
+- `MGCHECK_DB_URL`: Custom PostgreSQL URL for shadow testing.
+
+---
+
+## 💻 Programmatic TypeScript API
+
+You can also use Migration Guardian as a TypeScript library:
+
+```typescript
+import { analyzeMigration, runMigration } from 'mgcheck';
+
+// Static AST analysis
+const analysis = await analyzeMigration({
+  content: 'CREATE INDEX idx_user ON users(email);',
+});
+console.log(analysis.violations); // [{ ruleId: 'MG001', severity: 'error', ... }]
+
+// Full shadow database verification
+const result = await runMigration({
+  migrationPath: './migrations/001_init.sql',
+  provider: 'pglite',
+});
+console.log(result.passed); // true | false
+```
+
+---
+
+## 🗑️ Clean Uninstallation
+
+`mgcheck` respects your workspace and provides a clean removal process:
 
 ```bash
-npx mgcheck uninstall           # add --purge to also delete audit logs
+npx mgcheck uninstall          # Add --purge to also delete audit logs
 ```
 
-This removes only the `migration-guardian` entries and leaves your other settings alone. It also:
-- restores any Git hook you had before installing
-- strips the injected rule blocks from CLAUDE.md, AGENTS.md and the other rule files
-- reports any config that still mentions mgcheck
-
-mgcheck runs through `npx`, so there's no package to remove afterwards. Restart your editors so they stop any MCP server that's still running.
+- Unregisters `migration-guardian` from all editor MCP configs.
+- Removes injected instruction blocks from `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, etc.
+- Restores original pre-commit hooks.
+- Leaves unrelated developer settings untouched.
 
 ---
-
-## 🗺️ Roadmap
-
-- [x] AST rules, PGlite/Docker shadow DB, MCP server, watch mode, auto-fix, real-DB applier
-- [ ] LLM fix-and-re-verify loop
-- [ ] MySQL, SQLite and ClickHouse support
-
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 📄 License
 
-MIT © 2026 Aditya & the Migration Guardian community
+MIT © 2026 Aditya & the Migration Guardian community. Open source and built for the developer community.
