@@ -1,6 +1,7 @@
 import type { MigrationReport } from '../core/types.js';
 import chalk from 'chalk';
 import { basename } from 'node:path';
+import { VERSION } from '../version.js';
 
 /**
  * Rich terminal reporter with colors, symbols, and structured output.
@@ -11,7 +12,7 @@ export function renderTerminalReport(report: MigrationReport): string {
 
   // Header
   lines.push('');
-  lines.push(chalk.bold.cyan('  mgcheck') + chalk.dim(' v0.1.0 — Migration Guardian'));
+  lines.push(chalk.bold.cyan('  mgcheck') + chalk.dim(` v${VERSION} — Migration Guardian`));
   lines.push('');
 
   // Migration info
