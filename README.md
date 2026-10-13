@@ -2,8 +2,9 @@
 
 # 🛡️ Migration Guardian
 
-### `mgcheck` — catch unsafe PostgreSQL migrations before they lock production
+### `mgcheck` — catch unsafe database migrations before they lock production
 
+**Compatible with PostgreSQL, Supabase, Neon, AWS RDS/Aurora, Cloud SQL, TimescaleDB & CockroachDB.**
 **Whether the migration was written by you, a teammate, or an AI coding agent.**
 
 [![npm version](https://img.shields.io/npm/v/mgcheck.svg?color=blue)](https://www.npmjs.com/package/mgcheck)
@@ -339,9 +340,24 @@ Resolution order: `MGCHECK_MODE` env var → project config → global settings 
 
 ---
 
-## 🧩 Supported Migration Frameworks
+## 🧩 Supported Databases & Frameworks
 
-Point `mgcheck` at a file or directory — the format is detected automatically.
+### Databases & Cloud Platforms
+Compatible with standard PostgreSQL and all major Postgres-wire and compatible cloud engines:
+
+| Platform / Database | Status | Notes |
+| :--- | :---: | :--- |
+| **PostgreSQL (12–17)** | ✅ Native | Full AST rule engine + PGlite & Docker shadow testing |
+| **Supabase** | ✅ Native | Auto-detects `supabase/migrations` + shadow validation |
+| **Neon** | ✅ Native | Serverless branching & zero-downtime DDL |
+| **AWS Aurora & RDS (Postgres)** | ✅ Native | Verifies zero-downtime lock thresholds |
+| **Google Cloud SQL & AlloyDB** | ✅ Native | Standard PostgreSQL grammar & lock safety |
+| **TimescaleDB** | ✅ Native | PostgreSQL hypertable and continuous aggregate DDL |
+| **CockroachDB & YugabyteDB** | ✅ Compatible | PostgreSQL dialect and AST parsing |
+| **MySQL, SQLite & ClickHouse** | 🗺️ Roadmap | In active development ([help wanted](#-contributing)) |
+
+### Migration Frameworks (Auto-Detected)
+Point `npx mgcheck` at any migration directory or file — the format is detected automatically:
 
 | Framework | Detected by |
 | :--- | :--- |
