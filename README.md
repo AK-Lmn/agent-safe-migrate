@@ -79,6 +79,16 @@ This class of bug is getting **more common**, not less. AI coding agents (Claude
 
 > **Requirements:** Node.js 18+. Docker is optional — use `--provider pglite` to run everything in-process.
 
+### Choose your setup
+
+| Method | Command | Usage |
+| :--- | :--- | :--- |
+| **No install (npx)** *(Recommended)* | *None needed* | `npx mgcheck <command>` |
+| **Global install (npm)** | `npm install -g mgcheck` | `mgcheck <command>` |
+| **Project devDependency** | `npm install -D mgcheck` | `npx mgcheck <command>` or npm script |
+
+---
+
 **1. Connect your AI agents and start the watcher**
 
 ```bash
@@ -270,10 +280,10 @@ Switch approval mode on the fly with **`Shift+Tab`** / **`Shift+Enter`**, or typ
 > `high` can never be added to `autoApprove`. Config that tries to do so is rejected with an error.
 
 ```bash
-mgcheck mode                       # show active mode and where it came from
-mgcheck mode auto                  # set globally   (~/.mgcheck/settings.json)
-mgcheck mode manual --project      # set per project (.mgcheckrc.json)
-mgcheck mode auto --levels low     # auto mode, but only auto-approve LOW
+npx mgcheck mode                       # show active mode and where it came from
+npx mgcheck mode auto                  # set globally   (~/.mgcheck/settings.json)
+npx mgcheck mode manual --project      # set per project (.mgcheckrc.json)
+npx mgcheck mode auto --levels low     # auto mode, but only auto-approve LOW
 ```
 
 Resolution order: `MGCHECK_MODE` env var → project config → global settings → `manual`.
@@ -282,20 +292,22 @@ Resolution order: `MGCHECK_MODE` env var → project config → global settings 
 
 ## ⌨️ CLI Reference
 
+> 💡 **Tip:** Every command below can be run without install via `npx mgcheck <command>`. If installed globally (`npm install -g mgcheck`), you can use `mgcheck <command>` directly.
+
 | Command | Description |
 | :--- | :--- |
-| `mgcheck` · `mgcheck setup` | Detect AI clients, register the MCP server, launch the watcher. Aliases: `init`, `install-mcp`. |
-| `mgcheck analyze <path>` | Static AST analysis against the 10 rules. No database. |
-| `mgcheck run <path>` | Analysis + shadow-DB execution, with optional apply to a target DB. |
-| `mgcheck fix <path>` | Rewrite unsafe SQL into zero-downtime patterns and verify on a shadow DB. |
-| `mgcheck mode [auto\|manual]` | View or change approval mode (`--project`, `--levels`). |
-| `mgcheck log` · `mgcheck audit` | Show the audit log (`--all`, `--risk <level>`, `--tail`, `--json`, `--global`). |
-| `mgcheck hook [install\|uninstall\|run]` | Manage the Git pre-commit hook. `run` checks staged `.sql` files. |
-| `mgcheck mcp` | Start the MCP server over stdio (normally launched by your editor). |
-| `mgcheck uninstall` | Remove mgcheck from all AI clients, rule files and hooks (`--purge` also deletes audit logs). |
+| `npx mgcheck` · `npx mgcheck setup` | Detect AI clients, register the MCP server, launch the watcher. Aliases: `init`, `install-mcp`. |
+| `npx mgcheck analyze <path>` | Static AST analysis against the 10 rules. No database needed. |
+| `npx mgcheck run <path>` | Analysis + shadow-DB execution, with optional apply to a target DB. |
+| `npx mgcheck fix <path>` | Rewrite unsafe SQL into zero-downtime patterns and verify on a shadow DB. |
+| `npx mgcheck mode [auto\|manual]` | View or change approval mode (`--project`, `--levels`). |
+| `npx mgcheck log` · `npx mgcheck audit` | Show the audit log (`--all`, `--risk <level>`, `--tail`, `--json`, `--global`). |
+| `npx mgcheck hook [install\|uninstall\|run]` | Manage the Git pre-commit hook. `run` checks staged `.sql` files. |
+| `npx mgcheck mcp` | Start the MCP server over stdio (normally launched by your editor). |
+| `npx mgcheck uninstall` | Remove mgcheck from all AI clients, rule files and hooks (`--purge` also deletes audit logs). |
 
 <details>
-<summary><b><code>mgcheck run</code> options</b></summary>
+<summary><b><code>npx mgcheck run</code> options</b></summary>
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
@@ -443,12 +455,18 @@ Priority: **CLI flags → environment variables → config file → defaults.**
 | Path | Contents |
 | :--- | :--- |
 | `<project>/.mgcheck/audit.jsonl` | Per-project audit log |
-| `~/.mgcheck/audit.jsonl` | Global audit log (`mgcheck log --global`) |
+| `~/.mgcheck/audit.jsonl` | Global audit log (`npx mgcheck log --global`) |
 | `~/.mgcheck/settings.json` | Global approval mode settings |
 
 ---
 
 ## 💻 Programmatic API
+
+Install via npm:
+
+```bash
+npm install mgcheck
+```
 
 `mgcheck` is also an ESM library with full TypeScript types.
 
