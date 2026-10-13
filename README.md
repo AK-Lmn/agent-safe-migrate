@@ -68,6 +68,7 @@ npx mgcheck run ./migrations --provider pglite # check + run on an in-process sh
 | Command | What it does |
 | :--- | :--- |
 | `mgcheck` · `mgcheck setup` | Setup wizard: detects AI agents, configures MCP, then stays open as the approval terminal (keep it running) |
+| `mgcheck mode [auto\|manual]` | View or set approval mode (`manual` vs `auto`). Cycle live with `Shift+Tab` in watcher |
 | `mgcheck analyze <path>` | Static AST check against the 10 rules (no database needed) |
 | `mgcheck run <path>` | AST check + run on a shadow DB, and optionally apply to the real DB |
 | `mgcheck fix <path>` | Auto-rewrite unsafe SQL into zero-downtime form, verified on the shadow DB |
@@ -76,6 +77,24 @@ npx mgcheck run ./migrations --provider pglite # check + run on an in-process sh
 | `mgcheck hook run` | Check staged `.sql` files now. With Husky or Lefthook, add `npx --yes mgcheck hook run` to your pre-commit hook |
 | `mgcheck mcp` | Start the MCP server (stdio). AI agents launch this themselves |
 | `mgcheck uninstall` | Remove mgcheck from every agent config, rule file and Git hook |
+
+---
+
+## 🚦 Approval modes
+
+Migration Guardian operates in two approval modes:
+
+- **manual** (default): Safe (🟢 LOW) migrations run automatically. Migrations with warnings (🟡 MEDIUM) or blocking errors (🔴 HIGH) require human confirmation in the watcher terminal.
+- **auto**: Safe (🟢 LOW) and warning (🟡 MEDIUM) migrations run automatically. When fixable warnings are detected, the guardian first guides the AI agent to rewrite them into zero-warning safe SQL. 🔴 HIGH risk queries are **never** auto-approved and require typing `override`.
+
+### Switching modes
+```bash
+mgcheck mode                   # View active mode and source
+mgcheck mode auto              # Set global mode (~/.mgcheck/settings.json)
+mgcheck mode manual --project  # Set project-level mode (.mgcheckrc.json)
+mgcheck mode auto --levels low # Restrict auto mode to LOW risk only
+```
+In the watcher terminal, press **`Shift + Tab`** or **`Shift + Enter`** (or type `/auto` / `/manual`) to cycle modes live on the fly.
 
 <details>
 <summary><b>Useful flags</b></summary>

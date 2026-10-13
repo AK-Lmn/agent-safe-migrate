@@ -76,3 +76,17 @@ export {
 } from './fixer/index.js';
 export type { FixResult, AppliedFix } from './fixer/index.js';
 
+// Approval Modes
+export {
+  getApprovalMode,
+  setApprovalMode,
+  validateAutoApproveLevels,
+  getDefaultAutoApprove,
+} from './core/approval-mode.js';
+export type {
+  ApprovalMode,
+  SafeRiskLevel,
+  ApprovalSource,
+  ApprovalModeConfig,
+} from './core/approval-mode.js';
+

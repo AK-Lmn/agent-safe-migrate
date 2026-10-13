@@ -84,14 +84,6 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     }
   }
 
-  console.log(chalk.bold.green('\n  🎉 Migration Guardian is ready!'));
-  console.log(chalk.white('  Your AI assistant will now automatically check migrations before executing.\n'));
-  console.log(chalk.dim('  Behavior:'));
-  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Blocked. Shown here; type "override" to allow one anyway'));
-  console.log(chalk.dim('  • 🟡 MEDIUM risk queries → Shown here; approve or reject with y/N'));
-  console.log(chalk.dim('  • 🟢 LOW risk queries    → Shown here; approve or reject with y/N'));
-  console.log(chalk.dim('  • Keep this terminal open: without it, AI agents cannot get approval\n'));
-
   const {
     watchPendingApprovals,
     readPendingApprovals,
@@ -104,6 +96,31 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
     watchEvents,
     formatAuditEntry,
   } = await import('../core/activity-log.js');
+  const { getApprovalMode, setApprovalMode } = await import('../core/approval-mode.js');
+
+  // If a mode was explicitly requested via setup options, save it
+  if (options.mode) {
+    setApprovalMode({ mode: options.mode, projectDir: options.workspaceDir });
+  }
+
+  let currentConfig = getApprovalMode(options.workspaceDir);
+
+  console.log(chalk.bold.green('\n  🎉 Migration Guardian is ready!'));
+  console.log(chalk.white('  Your AI assistant will now automatically check migrations before executing.\n'));
+  console.log(
+    chalk.bold('  Approval Mode: ') +
+    (currentConfig.mode === 'auto' ? chalk.green.bold('AUTO') : chalk.cyan.bold('MANUAL')) +
+    chalk.dim(` (auto-approves: ${currentConfig.autoApprove.join(', ')})`)
+  );
+  console.log(chalk.dim('  Behavior:'));
+  console.log(chalk.dim('  • 🔴 HIGH risk queries   → Blocked. Shown here; type "override" to allow one anyway'));
+  if (currentConfig.mode === 'auto' && currentConfig.autoApprove.includes('medium')) {
+    console.log(chalk.dim('  • 🟡 MEDIUM risk queries → Auto-approved (agent attempts safe rewrite first)'));
+  } else {
+    console.log(chalk.dim('  • 🟡 MEDIUM risk queries → Shown here; approve or reject with y/N'));
+  }
+  console.log(chalk.dim('  • 🟢 LOW risk queries    → Auto-approved automatically'));
+  console.log(chalk.dim('  • Cycle modes anytime with shift+tab, shift+enter, or type /auto, /manual\n'));
 
   // Approval requests from every project/editor flow through the global ~/.mgcheck queue
   const ipcDir = getGlobalLogDir();
@@ -116,9 +133,55 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   console.log(chalk.bold.cyan('  👁️  Guardian Active — Watching for AI migration activity...'));
   console.log(chalk.dim('  Press Ctrl+C to stop.\n'));
   console.log(chalk.dim('  ─────────────────────────────────────────────────────────'));
-  console.log('');
+  console.log(
+    (currentConfig.mode === 'auto' ? chalk.green('  ● auto mode ') : chalk.cyan('  ● manual mode ')) +
+    chalk.dim('(shift+tab to cycle) · type /auto or /manual\n')
+  );
 
   const rl = readline.createInterface({ input, output });
+
+  // Mode switching state and handlers
+  let isPromptActive = false;
+
+  function switchMode(newMode: 'auto' | 'manual') {
+    setApprovalMode({ mode: newMode, projectDir: options.workspaceDir });
+    currentConfig = getApprovalMode(options.workspaceDir);
+    if (newMode === 'auto') {
+      console.log(chalk.green.bold('\n  ⚡ Switched to AUTO mode ') + chalk.dim(`(auto-approves: ${currentConfig.autoApprove.join(', ')})`));
+    } else {
+      console.log(chalk.cyan.bold('\n  ⚡ Switched to MANUAL mode ') + chalk.dim('(low auto-approved; medium & high require human confirmation)'));
+    }
+    console.log(
+      (newMode === 'auto' ? chalk.green('  ● auto mode ') : chalk.cyan('  ● manual mode ')) +
+      chalk.dim('(shift+tab to cycle) · type /auto or /manual\n')
+    );
+  }
+
+  function toggleMode() {
+    const nextMode = currentConfig.mode === 'auto' ? 'manual' : 'auto';
+    switchMode(nextMode);
+  }
+
+  rl.on('line', (line) => {
+    if (isPromptActive) return;
+    const trimmed = line.trim().toLowerCase();
+    if (trimmed === '/auto') {
+      switchMode('auto');
+    } else if (trimmed === '/manual') {
+      switchMode('manual');
+    } else if (trimmed === '/toggle') {
+      toggleMode();
+    }
+  });
+
+  input.on('keypress', (str: string, key: any) => {
+    if (isPromptActive) return;
+    const isShiftTab = (key && key.name === 'tab' && key.shift) || str === '\x1b[Z';
+    const isShiftEnter = key && (key.name === 'return' || key.name === 'enter') && key.shift;
+    if (isShiftTab || isShiftEnter) {
+      toggleMode();
+    }
+  });
 
   // Tell MCP tools a human is here to answer approval requests
   const stopHeartbeat = startWatcherHeartbeat(ipcDir);
@@ -131,12 +194,15 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   clearActivityLog();
 
   // Show every check that finishes without needing a decision here
-  // (auto-blocked MCP calls, CLI and git-hook runs) as it happens
+  // (auto-blocked MCP calls, CLI and git-hook runs, auto-approved checks) as it happens
   const stopEvents = watchEvents((entry) => {
     if (entry.decision === 'auto_retry') {
       const attemptStr = entry.attempt ? `[Attempt ${entry.attempt}/4]` : '[Auto-Retry]';
       console.log(chalk.cyan(`\n  ⚡ ${attemptStr} Intercepted unsafe migration — guiding AI agent to rewrite with safe patterns...`));
       return;
+    }
+    if (entry.decision === 'auto_allowed') {
+      console.log(chalk.green.bold(`\n  ⚡ ${entry.risk.toUpperCase()} RISK — AUTO-APPROVED (${currentConfig.mode} mode)`));
     }
     const source = entry.project ? `${entry.tool} · ${entry.project}` : entry.tool;
     console.log(chalk.dim(`  via ${source}`));
@@ -153,6 +219,8 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
   }, ipcDir);
 
   async function reviewRequest(entry: AuditEntry): Promise<void> {
+    isPromptActive = true;
+    try {
     // The agent stops waiting after 2 minutes; skip requests that expired in the queue
     if (!readPendingApprovals(ipcDir).some((p) => p.id === entry.id)) {
       console.log(chalk.dim(`  (request ${entry.id} expired before it could be reviewed)\n`));
@@ -338,6 +406,9 @@ export async function runInteractiveWizard(options: SetupOptions = {}) {
       // readline was closed (e.g. Ctrl+C during prompt)
       writeDecision(entry.id, false, ipcDir);
       removePendingApproval(entry.id, ipcDir);
+    }
+    } finally {
+      isPromptActive = false;
     }
   }
 

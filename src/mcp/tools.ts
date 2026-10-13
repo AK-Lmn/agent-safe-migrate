@@ -21,6 +21,7 @@ import { classifyRisk } from '../core/risk-classifier.js';
 import type { MigrationReport } from '../core/types.js';
 import { fixMigrationSql } from '../fixer/rules-fixer.js';
 import { findDatabaseUrl } from '../core/applier.js';
+import { getApprovalMode } from '../core/approval-mode.js';
 
 export interface RetrySession {
   attempt: number;
@@ -126,7 +127,7 @@ export function runMcpTools(server: McpServer) {
 
         const config = loadConfig({
           shadowDb: {
-            provider,
+            provider: provider || 'pglite',
             dockerImage: 'postgres:16-alpine',
             seedFile: base_schema_sql ? (() => {
               const seedFile = join(tmpDir, 'seed.sql');
@@ -147,9 +148,16 @@ export function runMcpTools(server: McpServer) {
         const activeSession = getRetrySession(projectDir);
         const currentAttempt = (activeSession ? activeSession.attempt : 0) + 1;
 
+        const { mode, autoApprove } = getApprovalMode(projectDir);
+
         // ── Autonomous Retry Loop (Attempts 1 to 3) ──────────────
-        // If query has blocking errors, has an auto-fix, is not unconfirmed destructive, and under 4 attempts:
-        if (risk.level === 'high' && fixResult.fixed && !isDestructive && currentAttempt < 4) {
+        // High risk errors always retry. In auto mode, fixable medium warnings retry to make query safe first.
+        const isFixableRetry =
+          ((risk.level === 'high') || (mode === 'auto' && risk.level === 'medium')) &&
+          fixResult.fixed &&
+          !isDestructive &&
+          currentAttempt < 4;
+        if (isFixableRetry) {
           retrySessions.set(projectDir, {
             attempt: currentAttempt,
             originalDraft: activeSession?.originalDraft || {
@@ -187,6 +195,10 @@ export function runMcpTools(server: McpServer) {
           publishEvent(retryEntry, ipcDir);
           logActivityFromReport('check_migration', report, auditDir);
 
+          const retryMessage = risk.level === 'high'
+            ? `⚠️ MIGRATION REJECTED (Attempt ${currentAttempt}/4): Detected ${risk.errorCount} blocking safety violation(s). You must rewrite your query using the suggested safe SQL below and retry.`
+            : `⚠️ MIGRATION NOTICES (Attempt ${currentAttempt}/4): Detected ${risk.warningCount} warning(s). Please rewrite your query using the suggested safe SQL below to eliminate warnings and make it safe (LOW risk) before execution.`;
+
           return {
             content: [{
               type: 'text' as const,
@@ -197,7 +209,7 @@ export function runMcpTools(server: McpServer) {
                   decision: 'auto_retry',
                   attempt: currentAttempt,
                   max_attempts: 4,
-                  message: `⚠️ MIGRATION REJECTED (Attempt ${currentAttempt}/4): Detected ${risk.errorCount} blocking safety violation(s). You must rewrite your query using the suggested safe SQL below and retry.`,
+                  message: retryMessage,
                   auto_fix: {
                     available: true,
                     suggested_safe_sql: fixResult.fixedSql,
@@ -213,9 +225,9 @@ export function runMcpTools(server: McpServer) {
 
         const originalDraft = activeSession?.originalDraft;
         const attemptNumber = activeSession ? activeSession.attempt + 1 : 1;
-        if (risk.level !== 'high' && activeSession) {
+        if (risk.level === 'low' && activeSession) {
           clearRetrySession(projectDir);
-        } else if (currentAttempt >= 4 || isDestructive) {
+        } else if (currentAttempt >= 4 || isDestructive || !fixResult.fixed) {
           clearRetrySession(projectDir);
         }
 
@@ -240,8 +252,57 @@ export function runMcpTools(server: McpServer) {
           originalDraft,
         };
 
-        // ── Decision Gate ────────────────────────────────────────
-        // Every risk level is shown to the human in the watcher terminal:
+        // ── Approval Mode & Decision Gate ────────────────────────
+        const canAutoApprove = autoApprove.includes(risk.level as any) && risk.level !== 'high';
+
+        if (canAutoApprove) {
+          auditEntry.decision = 'auto_allowed';
+          writeAuditEntry(auditEntry, auditDir);
+          publishEvent(auditEntry, ipcDir);
+          logActivityFromReport('check_migration', report, auditDir);
+
+          let autoApplied = false;
+          let applyError: string | undefined;
+          let applyTimeMs: number | undefined;
+
+          if (auto_apply !== false) {
+            const targetUrl = db_url || findDatabaseUrl(projectDir);
+            if (targetUrl) {
+              const { applyToRealDatabase } = await import('../core/applier.js');
+              const applyRes = await applyToRealDatabase(migration_sql, targetUrl);
+              autoApplied = applyRes.success;
+              applyTimeMs = applyRes.executionTimeMs;
+              applyError = applyRes.error;
+            }
+          }
+
+          const responseData = {
+            ...report,
+            applied: autoApplied,
+            executionTimeMs: applyTimeMs,
+            applyError,
+            guardian: {
+              risk: risk.level,
+              decision: 'auto_allowed',
+              message: autoApplied
+                ? `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk) and automatically applied to database (${applyTimeMs}ms).`
+                : `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk).`,
+            },
+            destructiveActionRequired:
+              report.hasDestructive && !confirm_destructive && risk.level !== 'high'
+                ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP TABLE or DROP COLUMN) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP TABLE/COLUMN). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
+                : undefined,
+          };
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify(responseData, null, 2),
+            }],
+          };
+        }
+
+        // Every non-auto-approved risk level is shown to the human in the watcher terminal:
         // 🔴 HIGH needs a typed override, 🟡/🟢 a y/N answer.
         const outcome = await requestApproval(auditEntry, ipcDir);
 
@@ -392,7 +453,14 @@ export function runMcpTools(server: McpServer) {
         const activeSession = getRetrySession(projectDir);
         const currentAttempt = (activeSession ? activeSession.attempt : 0) + 1;
 
-        if (risk.level === 'high' && fixResult.fixed && !isDestructive && currentAttempt < 4) {
+        const { mode, autoApprove } = getApprovalMode(projectDir);
+
+        const isFixableRetry =
+          ((risk.level === 'high') || (mode === 'auto' && risk.level === 'medium')) &&
+          fixResult.fixed &&
+          !isDestructive &&
+          currentAttempt < 4;
+        if (isFixableRetry) {
           retrySessions.set(projectDir, {
             attempt: currentAttempt,
             originalDraft: activeSession?.originalDraft || {
@@ -430,6 +498,10 @@ export function runMcpTools(server: McpServer) {
           publishEvent(retryEntry, ipcDir);
           logActivityFromReport('analyze_migration', report, auditDir);
 
+          const retryMessage = risk.level === 'high'
+            ? `⚠️ MIGRATION REJECTED (Attempt ${currentAttempt}/4): Detected ${risk.errorCount} blocking safety violation(s). You must rewrite your query using the suggested safe SQL below and retry.`
+            : `⚠️ MIGRATION NOTICES (Attempt ${currentAttempt}/4): Detected ${risk.warningCount} warning(s). Please rewrite your query using the suggested safe SQL below to eliminate warnings and make it safe (LOW risk) before execution.`;
+
           return {
             content: [{
               type: 'text' as const,
@@ -440,7 +512,7 @@ export function runMcpTools(server: McpServer) {
                   decision: 'auto_retry',
                   attempt: currentAttempt,
                   max_attempts: 4,
-                  message: `⚠️ MIGRATION REJECTED (Attempt ${currentAttempt}/4): Detected ${risk.errorCount} blocking safety violation(s). You must rewrite your query using the suggested safe SQL below and retry.`,
+                  message: retryMessage,
                   auto_fix: {
                     available: true,
                     suggested_safe_sql: fixResult.fixedSql,
@@ -456,9 +528,9 @@ export function runMcpTools(server: McpServer) {
 
         const originalDraft = activeSession?.originalDraft;
         const attemptNumber = activeSession ? activeSession.attempt + 1 : 1;
-        if (risk.level !== 'high' && activeSession) {
+        if (risk.level === 'low' && activeSession) {
           clearRetrySession(projectDir);
-        } else if (currentAttempt >= 4 || isDestructive) {
+        } else if (currentAttempt >= 4 || isDestructive || !fixResult.fixed) {
           clearRetrySession(projectDir);
         }
 
@@ -481,6 +553,30 @@ export function runMcpTools(server: McpServer) {
           attempt: attemptNumber,
           originalDraft,
         };
+
+        // ── Approval Mode & Decision Gate ────────────────────────
+        const canAutoApprove = autoApprove.includes(risk.level as any) && risk.level !== 'high';
+
+        if (canAutoApprove) {
+          auditEntry.decision = 'auto_allowed';
+          writeAuditEntry(auditEntry, auditDir);
+          publishEvent(auditEntry, ipcDir);
+          logActivityFromReport('analyze_migration', report, auditDir);
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ...report,
+                guardian: {
+                  risk: risk.level,
+                  decision: 'auto_allowed',
+                  message: `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk).`,
+                },
+              }, null, 2),
+            }],
+          };
+        }
 
         const outcome = await requestApproval(auditEntry, ipcDir);
 
@@ -612,6 +708,10 @@ export function runMcpTools(server: McpServer) {
         const verifyFile = join(verifyDir, 'migration.sql');
         writeFileSync(verifyFile, migration_sql, 'utf-8');
 
+        let auditDecision: string = 'user_approved';
+        let appliedRiskLevel: string = 'low';
+        let activeApprovalMode: string = 'manual';
+
         try {
           const verifyConfig = loadConfig({
             confirmDestructive: confirm_destructive ?? false,
@@ -620,6 +720,7 @@ export function runMcpTools(server: McpServer) {
 
           const preCheckReport = await runCheck(verifyFile, verifyConfig, 'analyze');
           const risk = classifyRisk(preCheckReport.violations);
+          appliedRiskLevel = risk.level;
           const auditId = generateAuditId();
 
           const blockingErrors = preCheckReport.violations.filter(
@@ -727,64 +828,77 @@ export function runMcpTools(server: McpServer) {
             originalDraft,
           };
 
-          // Every apply is shown in the watcher terminal; 🔴 needs a typed override
-          const outcome = await requestApproval(applyAudit, ipcDir);
+          // ── Approval Mode & Decision Gate ────────────────────────
+          const { mode, autoApprove } = getApprovalMode(projectDir);
+          const canAutoApprove = autoApprove.includes(risk.level as any) && blockingErrors.length === 0 && risk.level !== 'high';
 
-          // 🔴 HIGH RISK: blocked unless the user typed "override" in the terminal
-          if (blockingErrors.length > 0 && outcome !== 'approved') {
-            const violationSummary = blockingErrors
-              .map((v) => `[${v.ruleId}] ${v.message} (Line ${v.line})`)
-              .join('; ');
-
-            applyAudit.decision = outcome === 'rejected' ? 'user_rejected' : 'blocked';
+          if (canAutoApprove) {
+            applyAudit.decision = 'auto_allowed';
             writeAuditEntry(applyAudit, auditDir);
-            if (outcome === 'no-watcher') publishEvent(applyAudit, ipcDir);
+            publishEvent(applyAudit, ipcDir);
+          } else {
+            // Every non-auto-approved apply is shown in the watcher terminal; 🔴 needs a typed override
+            const outcome = await requestApproval(applyAudit, ipcDir);
 
-            const fixResult = fixMigrationSql(migration_sql, blockingErrors);
+            // 🔴 HIGH RISK: blocked unless the user typed "override" in the terminal
+            if (blockingErrors.length > 0 && outcome !== 'approved') {
+              const violationSummary = blockingErrors
+                .map((v) => `[${v.ruleId}] ${v.message} (Line ${v.line})`)
+                .join('; ');
 
-            return {
-              content: [{
-                type: 'text' as const,
-                text: JSON.stringify({
-                  success: false,
-                  error: `SECURITY GATE REJECTION: Cannot apply migration. Detected ${blockingErrors.length} blocking violation(s): ${violationSummary}`,
-                  guardian_message: highRiskBlockedMessage(blockingErrors.length, outcome),
-                  violations: blockingErrors,
-                  auto_fix: fixResult.fixed ? {
-                    available: true,
-                    suggested_safe_sql: fixResult.fixedSql,
-                    applied_fixes: fixResult.appliedFixes,
-                    instruction: "You must use 'suggested_safe_sql' to apply zero-downtime safe migrations.",
-                  } : undefined,
-                }, null, 2),
-              }],
-              isError: true,
-            };
+              applyAudit.decision = outcome === 'rejected' ? 'user_rejected' : 'blocked';
+              writeAuditEntry(applyAudit, auditDir);
+              if (outcome === 'no-watcher') publishEvent(applyAudit, ipcDir);
+
+              const fixResult = fixMigrationSql(migration_sql, blockingErrors);
+
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    success: false,
+                    error: `SECURITY GATE REJECTION: Cannot apply migration. Detected ${blockingErrors.length} blocking violation(s): ${violationSummary}`,
+                    guardian_message: highRiskBlockedMessage(blockingErrors.length, outcome),
+                    violations: blockingErrors,
+                    auto_fix: fixResult.fixed ? {
+                      available: true,
+                      suggested_safe_sql: fixResult.fixedSql,
+                      applied_fixes: fixResult.appliedFixes,
+                      instruction: "You must use 'suggested_safe_sql' to apply zero-downtime safe migrations.",
+                    } : undefined,
+                  }, null, 2),
+                }],
+                isError: true,
+              };
+            }
+
+            // 🟡 MEDIUM / 🟢 LOW not approved
+            if (outcome !== 'approved') {
+              applyAudit.decision = 'user_rejected';
+              writeAuditEntry(applyAudit, auditDir);
+
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    success: false,
+                    guardian: {
+                      risk: risk.level,
+                      decision: outcome === 'no-watcher' ? 'awaiting_watcher' : 'user_rejected',
+                      message: notApprovedMessage(outcome),
+                    },
+                  }, null, 2),
+                }],
+                isError: true,
+              };
+            }
+
+            applyAudit.decision = blockingErrors.length > 0 ? 'user_override' : 'user_approved';
+            writeAuditEntry(applyAudit, auditDir);
           }
 
-          // 🟡 MEDIUM / 🟢 LOW not approved
-          if (outcome !== 'approved') {
-            applyAudit.decision = 'user_rejected';
-            writeAuditEntry(applyAudit, auditDir);
-
-            return {
-              content: [{
-                type: 'text' as const,
-                text: JSON.stringify({
-                  success: false,
-                  guardian: {
-                    risk: risk.level,
-                    decision: outcome === 'no-watcher' ? 'awaiting_watcher' : 'user_rejected',
-                    message: notApprovedMessage(outcome),
-                  },
-                }, null, 2),
-              }],
-              isError: true,
-            };
-          }
-
-          applyAudit.decision = blockingErrors.length > 0 ? 'user_override' : 'user_approved';
-          writeAuditEntry(applyAudit, auditDir);
+          auditDecision = applyAudit.decision;
+          activeApprovalMode = mode;
         } finally {
           try {
             rmSync(verifyDir, { recursive: true, force: true });
@@ -830,10 +944,23 @@ export function runMcpTools(server: McpServer) {
             .filter(Boolean),
         }, auditDir);
 
+        const guardianInfo = {
+          risk: appliedRiskLevel,
+          decision: auditDecision,
+          message: auditDecision === 'auto_allowed'
+            ? `✅ Auto-approved (${activeApprovalMode} mode, ${appliedRiskLevel.toUpperCase()} risk) and applied to database (${result.executionTimeMs}ms).`
+            : (auditDecision === 'user_override'
+              ? '⚠️ HIGH RISK OVERRIDDEN: the user typed "override" in the Migration Guardian terminal to allow this despite blocking errors.'
+              : `✅ Approved by user in Migration Guardian terminal and applied to database (${result.executionTimeMs}ms).`),
+        };
+
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify({
+              ...result,
+              guardian: guardianInfo,
+            }, null, 2),
           }],
         };
       } catch (err) {

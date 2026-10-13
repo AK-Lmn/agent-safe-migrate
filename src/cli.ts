@@ -228,10 +228,11 @@ program
     'Target client: antigravity | cursor | claude | claude-code | cline | roo | continue | windsurf | zed | goose | aider | openhands | all',
     'all'
   )
+  .option('--mode <mode>', 'Approval mode: auto | manual')
   .option('--with-rules', 'Also write workspace AI rule files (.cursorrules, CLAUDE.md, etc.)', false)
   .action(async (options: any) => {
     const { runInteractiveWizard } = await import('./installer/index.js');
-    await runInteractiveWizard({ yes: options.yes, client: options.client, withRules: options.withRules });
+    await runInteractiveWizard({ yes: options.yes, client: options.client, withRules: options.withRules, mode: options.mode });
   });
 
 // ─── mgcheck uninstall ─────────────────────────────────────────────
@@ -413,6 +414,58 @@ program
     } catch (err) {
       console.error(`\n  ❌ Error reading audit log: ${(err as Error).message}\n`);
       process.exitCode = 3;
+    }
+  });
+
+// ─── mgcheck mode ──────────────────────────────────────────────────
+
+program
+  .command('mode [newMode]')
+  .description('View or set the approval mode (auto | manual)')
+  .option('--project', 'Set mode in the project config instead of global settings', false)
+  .option('--levels <levels>', 'Comma-separated risk levels to auto-approve (e.g. "low" or "low,medium")')
+  .action(async (newMode: string | undefined, options: any) => {
+    try {
+      const { getApprovalMode, setApprovalMode, validateAutoApproveLevels } = await import('./core/approval-mode.js');
+
+      if (!newMode && !options.levels) {
+        const current = getApprovalMode();
+        console.log('');
+        console.log(chalk.bold.cyan('  🛡️  Migration Guardian Approval Mode'));
+        console.log(chalk.dim('  ─────────────────────────────────────'));
+        console.log(chalk.white('  Mode          : ') + (current.mode === 'auto' ? chalk.green.bold('auto') : chalk.cyan.bold('manual')));
+        console.log(chalk.white('  Auto-Approved : ') + chalk.yellow(current.autoApprove.join(', ')));
+        console.log(chalk.white('  Source        : ') + chalk.dim(current.source));
+        console.log('');
+        return;
+      }
+
+      let targetLevels: ('low' | 'medium')[] | undefined;
+      if (options.levels) {
+        const raw = options.levels.split(',').map((s: string) => s.trim());
+        targetLevels = validateAutoApproveLevels(raw);
+      }
+
+      const modeArg = newMode ? (newMode.toLowerCase() as 'auto' | 'manual') : undefined;
+      if (modeArg && modeArg !== 'auto' && modeArg !== 'manual') {
+        console.error(chalk.red(`\n  ❌ Error: Invalid mode "${newMode}". Valid options are "auto" or "manual".\n`));
+        process.exitCode = 1;
+        return;
+      }
+
+      const result = setApprovalMode({
+        mode: modeArg,
+        autoApprove: targetLevels,
+        project: options.project,
+      });
+
+      console.log('');
+      console.log(chalk.green(`  ✅ Approval mode set to ${chalk.bold(result.mode)}`));
+      console.log(chalk.white(`  Auto-approved levels : `) + chalk.yellow(result.autoApprove.join(', ')));
+      console.log(chalk.dim(`  Saved to: ${result.filePath}\n`));
+    } catch (err) {
+      console.error(chalk.red(`\n  ❌ Error: ${(err as Error).message}\n`));
+      process.exitCode = 1;
     }
   });
 

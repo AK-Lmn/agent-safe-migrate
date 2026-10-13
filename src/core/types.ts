@@ -161,6 +161,8 @@ export interface MgcheckConfig {
     verbose: boolean;
   };
   confirmDestructive: boolean;
+  approvalMode?: 'auto' | 'manual';
+  autoApprove?: ('low' | 'medium')[];
   llm?: {
     provider: string;
     model: string;

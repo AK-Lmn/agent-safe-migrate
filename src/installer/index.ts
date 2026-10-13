@@ -8,6 +8,8 @@ export interface SetupOptions {
   client?: string;
   yes?: boolean;
   withRules?: boolean;
+  /** Initial approval mode: 'auto' | 'manual' */
+  mode?: 'auto' | 'manual';
   /** Uninstall only: also delete audit logs (~/.mgcheck and <project>/.mgcheck) */
   purge?: boolean;
   workspaceDir?: string;

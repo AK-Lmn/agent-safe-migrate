@@ -107,6 +107,13 @@ function applyEnvVars(config: MgcheckConfig): MgcheckConfig {
     };
   }
 
+  if (process.env.MGCHECK_MODE) {
+    const mode = process.env.MGCHECK_MODE.toLowerCase();
+    if (mode === 'auto' || mode === 'manual') {
+      result.approvalMode = mode;
+    }
+  }
+
   return result;
 }
 
@@ -128,6 +135,14 @@ function mergeConfig(a: MgcheckConfig, b: Partial<MgcheckConfig>): MgcheckConfig
 
   if (b.confirmDestructive !== undefined) {
     result.confirmDestructive = b.confirmDestructive;
+  }
+
+  if (b.approvalMode !== undefined) {
+    result.approvalMode = b.approvalMode;
+  }
+
+  if (b.autoApprove !== undefined) {
+    result.autoApprove = b.autoApprove;
   }
 
   if (b.llm) {
