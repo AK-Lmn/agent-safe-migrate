@@ -50,7 +50,7 @@
     "shadow-database",
     "migration-check"
   ],
-  "author": "",
+  "author": "Aditya Gandhi",
   "license": "MIT",
   "repository": {
     "type": "git",
