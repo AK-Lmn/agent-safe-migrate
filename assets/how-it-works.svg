@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720" role="img" aria-label="How mgcheck works: your AI writes SQL, mgcheck checks and test-runs it, then safe changes run, risky ones wait for you, and dangerous ones are blocked.">
+  <title>How mgcheck works</title>
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#60A5FA"/>
+    </marker>
+    <symbol id="logo" viewBox="0 0 128 128">
+      <path d="M64 6 L112 24 V62 C112 92 90 112 64 122 C38 112 16 92 16 62 V24 Z" fill="url(#shield)"/>
+      <path d="M38 40 V80 A26 9 0 0 0 90 80 V40 Z" fill="#E0ECFF"/>
+      <path d="M38 53 A26 9 0 0 0 90 53" fill="none" stroke="#93C5FD" stroke-width="3"/>
+      <path d="M38 66 A26 9 0 0 0 90 66" fill="none" stroke="#93C5FD" stroke-width="3"/>
+      <ellipse cx="64" cy="40" rx="26" ry="9" fill="#FFFFFF" stroke="#93C5FD" stroke-width="2"/>
+      <circle cx="90" cy="90" r="20" fill="#22C55E" stroke="#0B1220" stroke-width="4"/>
+      <path d="M80 90 L87 97 L100 83" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <style>
+    .sans { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; }
+    .mono { font-family: Consolas, Menlo, 'SF Mono', 'Courier New', monospace; }
+  </style>
+
+  <!-- Background -->
+  <rect width="1280" height="720" rx="28" fill="#0B1220"/>
+
+  <!-- Header -->
+  <use href="#logo" x="52" y="34" width="80" height="80"/>
+  <text x="148" y="82" class="sans" font-size="46" font-weight="700" fill="#FFFFFF">mgcheck</text>
+  <text x="148" y="114" class="sans" font-size="21" fill="#94A3B8">A safety net between AI coding assistants and your database</text>
+
+  <!-- Column labels -->
+  <text x="56" y="172" class="sans" font-size="15" font-weight="700" fill="#60A5FA" letter-spacing="1.5">1 · YOUR AI WRITES A CHANGE</text>
+  <text x="456" y="172" class="sans" font-size="15" font-weight="700" fill="#60A5FA" letter-spacing="1.5">2 · MGCHECK CHECKS IT</text>
+  <text x="884" y="172" class="sans" font-size="15" font-weight="700" fill="#60A5FA" letter-spacing="1.5">3 · YOU STAY IN CONTROL</text>
+
+  <!-- ── Column 1: the AI's migration ── -->
+  <rect x="56" y="196" width="320" height="230" rx="16" fill="#111827" stroke="#1F2937" stroke-width="2"/>
+  <circle cx="80" cy="220" r="6" fill="#EF4444"/>
+  <circle cx="100" cy="220" r="6" fill="#F59E0B"/>
+  <circle cx="120" cy="220" r="6" fill="#22C55E"/>
+  <text x="144" y="225" class="mono" font-size="14" fill="#64748B">migration.sql</text>
+  <text x="76" y="270" class="mono" font-size="19" fill="#E2E8F0"><tspan fill="#C084FC">CREATE INDEX</tspan> idx_email</text>
+  <text x="76" y="298" class="mono" font-size="19" fill="#E2E8F0">  <tspan fill="#C084FC">ON</tspan> users(email);</text>
+  <rect x="72" y="326" width="288" height="80" rx="10" fill="#450A0A" stroke="#7F1D1D"/>
+  <text x="90" y="356" class="sans" font-size="16" font-weight="600" fill="#FCA5A5">Looks harmless, but it locks</text>
+  <text x="90" y="382" class="sans" font-size="16" font-weight="600" fill="#FCA5A5">the table → your app freezes</text>
+
+  <text x="56" y="466" class="sans" font-size="15" fill="#64748B">Written by Cursor, Claude Code, Copilot,</text>
+  <text x="56" y="490" class="sans" font-size="15" fill="#64748B">Windsurf, Cline… or by you.</text>
+
+  <!-- Arrow 1 -->
+  <line x1="388" y1="311" x2="444" y2="311" stroke="#60A5FA" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- ── Column 2: mgcheck ── -->
+  <rect x="456" y="196" width="368" height="362" rx="18" fill="#0F1B33" stroke="#3B82F6" stroke-width="2"/>
+  <use href="#logo" x="474" y="210" width="40" height="40"/>
+  <text x="524" y="238" class="sans" font-size="20" font-weight="700" fill="#FFFFFF">Migration Guardian</text>
+
+  <circle cx="496" cy="290" r="16" fill="#1D4ED8"/>
+  <text x="496" y="296" class="sans" font-size="16" font-weight="700" fill="#FFFFFF" text-anchor="middle">1</text>
+  <text x="526" y="286" class="sans" font-size="18" font-weight="700" fill="#FFFFFF">Checks 10 safety rules</text>
+  <text x="526" y="308" class="sans" font-size="14" fill="#94A3B8">Real PostgreSQL parser, no guessing</text>
+
+  <circle cx="496" cy="352" r="16" fill="#1D4ED8"/>
+  <text x="496" y="358" class="sans" font-size="16" font-weight="700" fill="#FFFFFF" text-anchor="middle">2</text>
+  <text x="526" y="348" class="sans" font-size="18" font-weight="700" fill="#FFFFFF">Test-runs it on a throwaway copy</text>
+  <text x="526" y="370" class="sans" font-size="14" fill="#94A3B8">Your real data is never touched</text>
+
+  <circle cx="496" cy="414" r="16" fill="#1D4ED8"/>
+  <text x="496" y="420" class="sans" font-size="16" font-weight="700" fill="#FFFFFF" text-anchor="middle">3</text>
+  <text x="526" y="410" class="sans" font-size="18" font-weight="700" fill="#FFFFFF">Suggests a safe rewrite</text>
+  <text x="526" y="432" class="sans" font-size="14" fill="#94A3B8">Zero-downtime version, tested first</text>
+
+  <rect x="476" y="458" width="328" height="80" rx="10" fill="#052E16" stroke="#166534"/>
+  <text x="492" y="480" class="sans" font-size="12" font-weight="700" fill="#4ADE80" letter-spacing="1.5">SAFE VERSION</text>
+  <text x="492" y="504" class="mono" font-size="15" fill="#D1FAE5"><tspan fill="#C084FC">CREATE INDEX</tspan> <tspan fill="#4ADE80" font-weight="700">CONCURRENTLY</tspan></text>
+  <text x="492" y="526" class="mono" font-size="15" fill="#D1FAE5">  idx_email <tspan fill="#C084FC">ON</tspan> users(email);</text>
+
+  <!-- Arrows fanning out to outcomes -->
+  <path d="M828 377 C 856 377, 852 250, 876 250" fill="none" stroke="#60A5FA" stroke-width="3" marker-end="url(#arrow)"/>
+  <line x1="828" y1="377" x2="876" y2="377" stroke="#60A5FA" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M828 377 C 856 377, 852 504, 876 504" fill="none" stroke="#60A5FA" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- ── Column 3: outcomes ── -->
+  <!-- Safe -->
+  <rect x="884" y="198" width="340" height="104" rx="14" fill="#052E16" stroke="#16A34A" stroke-width="2"/>
+  <circle cx="928" cy="250" r="22" fill="#16A34A"/>
+  <path d="M917 250 L925 258 L940 242" fill="none" stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="966" y="240" class="sans" font-size="20" font-weight="800" fill="#4ADE80" letter-spacing="1">SAFE</text>
+  <text x="966" y="266" class="sans" font-size="15" fill="#CBD5E1">Runs on your database</text>
+  <text x="966" y="287" class="sans" font-size="15" fill="#CBD5E1">automatically</text>
+
+  <!-- Risky -->
+  <rect x="884" y="325" width="340" height="104" rx="14" fill="#3A2A05" stroke="#D97706" stroke-width="2"/>
+  <circle cx="928" cy="377" r="22" fill="#D97706"/>
+  <text x="928" y="386" class="sans" font-size="26" font-weight="800" fill="#FFFFFF" text-anchor="middle">?</text>
+  <text x="966" y="367" class="sans" font-size="20" font-weight="800" fill="#FBBF24" letter-spacing="1">RISKY</text>
+  <text x="966" y="393" class="sans" font-size="15" fill="#CBD5E1">Waits for you to approve</text>
+  <text x="966" y="414" class="sans" font-size="15" fill="#CBD5E1">in your terminal  <tspan class="mono" fill="#FBBF24">y / N</tspan></text>
+
+  <!-- Dangerous -->
+  <rect x="884" y="452" width="340" height="104" rx="14" fill="#3B0A0A" stroke="#DC2626" stroke-width="2"/>
+  <circle cx="928" cy="504" r="22" fill="#DC2626"/>
+  <path d="M919 495 L937 513 M937 495 L919 513" stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round"/>
+  <text x="966" y="494" class="sans" font-size="20" font-weight="800" fill="#F87171" letter-spacing="1">DANGEROUS</text>
+  <text x="966" y="520" class="sans" font-size="15" fill="#CBD5E1">e.g. DROP TABLE — blocked unless</text>
+  <text x="966" y="541" class="sans" font-size="15" fill="#CBD5E1">you type <tspan class="mono" fill="#F87171" font-weight="700">override</tspan></text>
+
+  <!-- Footer -->
+  <line x1="56" y1="600" x2="1224" y2="600" stroke="#1E293B" stroke-width="2"/>
+  <rect x="490" y="626" width="300" height="56" rx="28" fill="#1E293B" stroke="#334155" stroke-width="2"/>
+  <text x="640" y="663" class="mono" font-size="24" fill="#FFFFFF" text-anchor="middle"><tspan fill="#4ADE80">$</tspan> npx mgcheck</text>
+  <text x="56" y="660" class="sans" font-size="15" fill="#64748B">PostgreSQL · Prisma · Drizzle · Supabase · SQL</text>
+  <text x="1224" y="660" class="sans" font-size="15" fill="#64748B" text-anchor="end">Free &amp; open source · MIT</text>
+</svg>

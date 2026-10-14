@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🛡️ Migration Guardian
+<img src="assets/logo.svg" alt="Migration Guardian logo" width="110">
+
+# Migration Guardian
 
 ### `mgcheck` — catch unsafe database migrations before they lock production
 
@@ -32,6 +34,10 @@ npx mgcheck
 [Security](SECURITY.md) ·
 [Roadmap](#%EF%B8%8F-roadmap--help-wanted) ·
 [Contributing](#-contributing)
+
+<br>
+
+<img src="assets/how-it-works-v2.svg" alt="Without mgcheck, SQL written by an AI assistant runs straight on production, locks the database and freezes the app. With mgcheck, the same SQL is first test-run on a shadow database, the lock is found and fixed, and the safe change is applied with zero downtime." width="100%">
 
 </div>
 
