@@ -37,18 +37,23 @@ export async function parseSql(rawSql: string): Promise<ParsedStatement[]> {
       return statements;
     }
   } catch {
-    // Fallback: regex-based splitting with no AST
-    // This allows rule checks that don't need deep AST access
+    // Fallback: split the file and parse each statement on its own, so one
+    // bad statement doesn't hide the AST of the others. Statements the parser
+    // still rejects keep ast: null (rules use text matching) and record why.
+    const { parse } = await import('pgsql-parser');
     const rawStatements = splitStatements(rawSql);
     for (let i = 0; i < rawStatements.length; i++) {
       const raw = rawStatements[i].trim();
       if (!raw) continue;
 
-      statements.push({
-        raw,
-        line: findLineNumber(rawSql, rawStatements[i]),
-        ast: null,
-      });
+      const line = findLineNumber(rawSql, rawStatements[i]);
+      try {
+        const result = await parse(raw);
+        const stmtList = Array.isArray(result) ? result : (result?.stmts || []);
+        statements.push({ raw, line, ast: stmtList[0] ?? null });
+      } catch (err) {
+        statements.push({ raw, line, ast: null, parseError: (err as Error).message });
+      }
     }
     return statements;
   }

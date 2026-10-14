@@ -91,7 +91,7 @@ export function runMcpTools(server: McpServer) {
         .boolean()
         .default(false)
         .describe(
-          'Set to true to allow destructive operations (DROP TABLE, DROP COLUMN). Default: false'
+          'Set to true to allow destructive operations (DROP TABLE/COLUMN/SCHEMA/DATABASE, TRUNCATE). Default: false'
         ),
       provider: z
         .enum(['docker', 'pglite'])
@@ -105,10 +105,10 @@ export function runMcpTools(server: McpServer) {
         .describe('Absolute path of the current workspace/project root. The audit log is written to <project_dir>/.mgcheck/audit.jsonl.'),
       auto_apply: z
         .boolean()
-        .default(true)
+        .default(false)
         .optional()
         .describe(
-          'If true (default) and approved by the user in the CLI, automatically execute the migration against the target database.'
+          'Default false: check_migration only verifies. Set true ONLY when the user has explicitly asked you to apply this migration now; it then runs against the target database once approved. Otherwise ask the user and call apply_migration.'
         ),
       db_url: z
         .string()
@@ -265,7 +265,7 @@ export function runMcpTools(server: McpServer) {
           let applyError: string | undefined;
           let applyTimeMs: number | undefined;
 
-          if (auto_apply !== false) {
+          if (auto_apply === true) {
             const targetUrl = db_url || findDatabaseUrl(projectDir);
             if (targetUrl) {
               const { applyToRealDatabase } = await import('../core/applier.js');
@@ -286,11 +286,11 @@ export function runMcpTools(server: McpServer) {
               decision: 'auto_allowed',
               message: autoApplied
                 ? `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk) and automatically applied to database (${applyTimeMs}ms).`
-                : `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk).`,
+                : `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk). Not applied yet: ask the user whether to apply it, then call apply_migration.`,
             },
             destructiveActionRequired:
               report.hasDestructive && !confirm_destructive && risk.level !== 'high'
-                ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP TABLE or DROP COLUMN) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP TABLE/COLUMN). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
+                ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP or TRUNCATE) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP/TRUNCATE). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
                 : undefined,
           };
 
@@ -346,7 +346,7 @@ export function runMcpTools(server: McpServer) {
           let applyError: string | undefined;
           let applyTimeMs: number | undefined;
 
-          if (auto_apply !== false) {
+          if (auto_apply === true) {
             const targetUrl = db_url || findDatabaseUrl(projectDir);
             if (targetUrl) {
               const { applyToRealDatabase } = await import('../core/applier.js');
@@ -369,11 +369,11 @@ export function runMcpTools(server: McpServer) {
                 ? `✅ Approved by user in Migration Guardian terminal and automatically applied to database (${applyTimeMs}ms).`
                 : risk.level === 'high'
                 ? '⚠️ HIGH RISK OVERRIDDEN: the user typed "override" in the Migration Guardian terminal to allow this despite blocking errors.'
-                : '✅ Approved by user. Migration passed guardian review.',
+                : '✅ Approved by user. Migration passed guardian review. Not applied yet: call apply_migration with confirm_user_approved: true to run it.',
             },
             destructiveActionRequired:
               report.hasDestructive && !confirm_destructive && risk.level !== 'high'
-                ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP TABLE or DROP COLUMN) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP TABLE/COLUMN). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
+                ? '🚨 ATTENTION AI AGENT: This migration contains DESTRUCTIVE operations (DROP or TRUNCATE) which will permanently delete user data. You MUST pause and ask the user for confirmation: "This migration contains destructive operations (DROP/TRUNCATE). Do you approve running this destructive migration?". Only if the user explicitly confirms "yes", call check_migration again with confirm_destructive: true.'
                 : undefined,
           };
 
@@ -418,7 +418,7 @@ export function runMcpTools(server: McpServer) {
   // ── Tool 2: analyze_migration ────────────────────────────────────
   server.tool(
     'analyze_migration',
-    'Static analysis only — check migration SQL against 10 safety rules without executing. No Docker or database required. HIGH risk queries are blocked unless the user overrides them in the Migration Guardian terminal. Others require user approval there.',
+    'Static analysis only — check migration SQL against the safety rules without executing. No Docker or database required. HIGH risk queries are blocked unless the user overrides them in the Migration Guardian terminal. Others require user approval there.',
     {
       migration_sql: z
         .string()
@@ -571,7 +571,7 @@ export function runMcpTools(server: McpServer) {
                 guardian: {
                   risk: risk.level,
                   decision: 'auto_allowed',
-                  message: `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk).`,
+                  message: `✅ Auto-approved (${mode} mode, ${risk.level.toUpperCase()} risk). Not applied yet: ask the user whether to apply it, then call apply_migration.`,
                 },
               }, null, 2),
             }],

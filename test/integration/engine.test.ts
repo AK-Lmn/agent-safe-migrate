@@ -75,4 +75,31 @@ describe('Engine Integration (analyze & pglite)', () => {
     expect(reportConfirmed.execution?.success).toBe(true);
     expect(reportConfirmed.passed).toBe(true);
   });
+
+  it('lets --confirm-destructive allow destructive errors without demoting the rule', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'mgcheck-destructive-'));
+    const file = join(dir, 'truncate.sql');
+    writeFileSync(file, "SET lock_timeout = '5s';\nTRUNCATE users;\n", 'utf-8');
+    try {
+      const blocked = await runCheck(file, loadConfig({ confirmDestructive: false }), 'analyze');
+      expect(blocked.passed).toBe(false);
+      expect(blocked.hasDestructive).toBe(true);
+      expect(blocked.violations.map((v) => v.ruleId)).toContain('MG011');
+
+      const confirmed = await runCheck(file, loadConfig({ confirmDestructive: true }), 'analyze');
+      expect(confirmed.violations.map((v) => v.ruleId)).toContain('MG011');
+      expect(confirmed.passed).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still fails non-destructive errors when --confirm-destructive is set', async () => {
+    const fixturePath = resolve(__dirname, '../fixtures/migrations/unsafe-create-index.sql');
+    const report = await runCheck(fixturePath, loadConfig({ confirmDestructive: true }), 'analyze');
+    expect(report.passed).toBe(false);
+  });
 });

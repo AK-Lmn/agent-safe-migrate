@@ -275,6 +275,10 @@ jobs:
 | `MG008` | **warning** | `RENAME TABLE` | `ALTER TABLE old_name RENAME TO new_name;` | Create a view aliasing `old_name` pointing to `new_name`. |
 | `MG009` | **warning** | Missing `lock_timeout` before DDL | `ALTER TABLE users ADD COLUMN bio text;` | Prepend `SET lock_timeout = '5s';` |
 | `MG010` | **warning** | Missing rollback / down migration | Migration has no companion down step | Provide companion `.down.sql` script. |
+| `MG011` | **error** | `TRUNCATE` | `TRUNCATE users;` | Delete specific rows in batches; requires `--confirm-destructive`. |
+| `MG012` | **error** | `DROP SCHEMA` | `DROP SCHEMA public CASCADE;` | Drop objects one by one after review; requires `--confirm-destructive`. |
+| `MG013` | **error** | `DROP DATABASE` | `DROP DATABASE prod;` | Never in a migration; requires `--confirm-destructive`. |
+| `MG014` | **warning** | SQL the parser can't read | `CREAT TABLE x (id int);` | Fix the typo, or verify with `mgcheck run`. |
 
 ---
 

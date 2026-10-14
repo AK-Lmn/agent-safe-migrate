@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { loadConfig } from './core/config.js';
 import { runCheck } from './core/engine.js';
+import { DESTRUCTIVE_RULE_IDS } from './analyzer/index.js';
 import { renderReport, getExitCode } from './reporter/index.js';
 import type { MgcheckConfig, MigrationReport, OutputFormat, ShadowProvider } from './core/types.js';
 import { VERSION } from './version.js';
@@ -29,7 +30,7 @@ program
   .option('--provider <provider>', 'Shadow DB provider: docker | pglite', 'docker')
   .option('--format <format>', 'Output format: terminal | json | markdown', 'terminal')
   .option('--ci', 'Machine-readable JSON output + exit codes only', false)
-  .option('--confirm-destructive', 'Allow destructive operations (DROP, TRUNCATE)', false)
+  .option('--confirm-destructive', 'Allow destructive operations (DROP TABLE/COLUMN/SCHEMA/DATABASE, TRUNCATE)', false)
   .option('--verbose', 'Show detailed execution logs', false)
   .option('--fix', 'Attempt zero-downtime auto-fix and prompt with verified diff if unsafe', false)
   .option('--config <path>', 'Path to config file')
@@ -53,7 +54,7 @@ program
         process.stdin.isTTY
       ) {
         const destructiveViolations = report.violations.filter(
-          (v) => v.ruleId === 'MG005' || v.ruleId === 'MG006'
+          (v) => DESTRUCTIVE_RULE_IDS.has(v.ruleId)
         );
         const { promptDestructiveConfirmation } = await import('./core/applier.js');
         const approved = await promptDestructiveConfirmation(destructiveViolations, options.ci);
@@ -135,7 +136,7 @@ program
         process.stdin.isTTY
       ) {
         const destructiveViolations = report.violations.filter(
-          (v) => v.ruleId === 'MG005' || v.ruleId === 'MG006'
+          (v) => DESTRUCTIVE_RULE_IDS.has(v.ruleId)
         );
         const { promptDestructiveConfirmation } = await import('./core/applier.js');
         const approved = await promptDestructiveConfirmation(destructiveViolations, options.ci);

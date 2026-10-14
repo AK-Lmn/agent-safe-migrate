@@ -82,6 +82,8 @@ export interface ParsedStatement {
   line: number;
   /** The parsed AST node from pgsql-parser */
   ast: any;
+  /** Set when the PostgreSQL parser rejected this statement (rules fall back to text matching) */
+  parseError?: string;
 }
 
 // ─── Shadow Database ─────────────────────────────────────────────────

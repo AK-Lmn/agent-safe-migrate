@@ -10,6 +10,11 @@ import { renameColumn } from '../../src/analyzer/rules/rename-column.js';
 import { renameTable } from '../../src/analyzer/rules/rename-table.js';
 import { missingLockTimeout } from '../../src/analyzer/rules/missing-lock-timeout.js';
 import { missingDownMigration } from '../../src/analyzer/rules/missing-down-migration.js';
+import { truncateTable } from '../../src/analyzer/rules/truncate-table.js';
+import { dropSchema } from '../../src/analyzer/rules/drop-schema.js';
+import { dropDatabase } from '../../src/analyzer/rules/drop-database.js';
+import { unparseableSql } from '../../src/analyzer/rules/unparseable-sql.js';
+import { DESTRUCTIVE_RULE_IDS } from '../../src/analyzer/rules/index.js';
 import type { RuleContext } from '../../src/analyzer/rules/types.js';
 
 const defaultContext: RuleContext = {
@@ -241,5 +246,92 @@ describe('MG010: missing-down-migration', () => {
     };
     const violations = missingDownMigration.check(stmts, context);
     expect(violations.length).toBe(0);
+  });
+});
+
+// ─── MG011: TRUNCATE ───────────────────────────────────────────────
+
+describe('MG011: truncate-table', () => {
+  it('should flag TRUNCATE', async () => {
+    const stmts = await parseSql('TRUNCATE users;');
+    const violations = truncateTable.check(stmts, defaultContext);
+    expect(violations.length).toBe(1);
+    expect(violations[0].ruleId).toBe('MG011');
+    expect(violations[0].severity).toBe('error');
+  });
+
+  it('should mention CASCADE when present', async () => {
+    const stmts = await parseSql('TRUNCATE TABLE users CASCADE;');
+    const violations = truncateTable.check(stmts, defaultContext);
+    expect(violations[0].message).toContain('CASCADE');
+  });
+
+  it('should NOT flag DELETE or other statements', async () => {
+    const stmts = await parseSql("DELETE FROM users WHERE id = 1;\nCREATE TABLE truncate_log (id int);");
+    expect(truncateTable.check(stmts, defaultContext).length).toBe(0);
+  });
+});
+
+// ─── MG012: DROP SCHEMA ────────────────────────────────────────────
+
+describe('MG012: drop-schema', () => {
+  it('should flag DROP SCHEMA ... CASCADE', async () => {
+    const stmts = await parseSql('DROP SCHEMA public CASCADE;');
+    const violations = dropSchema.check(stmts, defaultContext);
+    expect(violations.length).toBe(1);
+    expect(violations[0].ruleId).toBe('MG012');
+    expect(violations[0].message).toContain('CASCADE');
+  });
+
+  it('should NOT flag DROP TABLE', async () => {
+    const stmts = await parseSql('DROP TABLE users;');
+    expect(dropSchema.check(stmts, defaultContext).length).toBe(0);
+  });
+});
+
+// ─── MG013: DROP DATABASE ──────────────────────────────────────────
+
+describe('MG013: drop-database', () => {
+  it('should flag DROP DATABASE', async () => {
+    const stmts = await parseSql('DROP DATABASE prod;');
+    const violations = dropDatabase.check(stmts, defaultContext);
+    expect(violations.length).toBe(1);
+    expect(violations[0].ruleId).toBe('MG013');
+  });
+
+  it('should be treated as destructive along with TRUNCATE and DROP SCHEMA', () => {
+    for (const id of ['MG005', 'MG006', 'MG011', 'MG012', 'MG013']) {
+      expect(DESTRUCTIVE_RULE_IDS.has(id)).toBe(true);
+    }
+  });
+});
+
+// ─── MG014: unparseable SQL ────────────────────────────────────────
+
+describe('MG014: unparseable-sql', () => {
+  it('should flag a statement the parser rejects, with the parser error', async () => {
+    const stmts = await parseSql('CREAT TABLE x (id int);');
+    const violations = unparseableSql.check(stmts, defaultContext);
+    expect(violations.length).toBe(1);
+    expect(violations[0].ruleId).toBe('MG014');
+    expect(violations[0].severity).toBe('warning');
+    expect(violations[0].message).toContain('CREAT');
+  });
+
+  it('should keep the AST for the valid statements around a bad one', async () => {
+    const stmts = await parseSql('CREATE INDEX idx_a ON users (email);\nCREAT TABLE x (id int);\nTRUNCATE users;');
+    expect(stmts.length).toBe(3);
+    expect(stmts[0].ast).not.toBeNull();
+    expect(stmts[1].parseError).toBeDefined();
+    expect(stmts[2].ast).not.toBeNull();
+    expect(stmts[1].line).toBe(2);
+    expect(createIndexNotConcurrent.check(stmts, defaultContext).length).toBe(1);
+    expect(truncateTable.check(stmts, defaultContext).length).toBe(1);
+    expect(unparseableSql.check(stmts, defaultContext).length).toBe(1);
+  });
+
+  it('should NOT flag valid SQL', async () => {
+    const stmts = await parseSql("SET lock_timeout = '5s';\nCREATE TABLE ok (id int);");
+    expect(unparseableSql.check(stmts, defaultContext).length).toBe(0);
   });
 });

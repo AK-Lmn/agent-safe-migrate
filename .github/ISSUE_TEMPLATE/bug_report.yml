@@ -1,0 +1,77 @@
+name: 🐛 Bug report
+description: Something in mgcheck doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Security issues** (e.g. a way to get a dangerous migration approved without the user) should go through [private vulnerability reporting](https://github.com/Aditya31032006/agent-safe-migrate/security/advisories/new), not here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you run, and what went wrong?
+      placeholder: "I ran `npx mgcheck analyze ./migrations` and it said PASSED, but..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: sql
+    attributes:
+      label: Migration SQL that reproduces it
+      description: The smallest SQL that shows the problem. Remove anything private.
+      render: sql
+      placeholder: CREATE INDEX idx_users_email ON users(email);
+
+  - type: textarea
+    id: output
+    attributes:
+      label: mgcheck output
+      description: Paste the terminal output or error message.
+      render: text
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - CLI (analyze / run / fix)
+        - AI agent via MCP (check_migration / analyze_migration / apply_migration)
+        - Watcher terminal (npx mgcheck)
+        - Setup / uninstall
+        - Git pre-commit hook
+        - CI
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: mgcheck version
+      description: Output of `npx mgcheck --version`
+      placeholder: 0.2.7
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS, Node version, and AI agent (if any)
+      placeholder: Windows 11, Node 20.11, Cursor
+    validations:
+      required: true
+
+  - type: input
+    id: framework
+    attributes:
+      label: Migration tool
+      placeholder: Prisma / Drizzle / Supabase / raw SQL / ...

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🔐 Report a security vulnerability
+    url: https://github.com/Aditya31032006/agent-safe-migrate/security/advisories/new
+    about: Please report security issues privately, not as a public issue.
+  - name: 📖 Read the docs
+    url: https://github.com/Aditya31032006/agent-safe-migrate#readme
+    about: Setup, commands, approval modes and the safety rules.

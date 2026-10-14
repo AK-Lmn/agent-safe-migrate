@@ -1,0 +1,49 @@
+name: 🛡️ New safety rule
+description: A dangerous migration pattern that mgcheck should catch
+labels: ["rules"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rules are the easiest way to contribute. See [Adding a safety rule](https://github.com/Aditya31032006/agent-safe-migrate/blob/main/CONTRIBUTING.md#%EF%B8%8F-adding-a-safety-rule).
+
+  - type: textarea
+    id: unsafe
+    attributes:
+      label: Unsafe SQL
+      description: SQL that mgcheck currently lets through.
+      render: sql
+      placeholder: VACUUM FULL users;
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What goes wrong in production?
+      description: Which lock does it take, what does it block, or what data is lost? Links to the PostgreSQL docs help.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safe
+    attributes:
+      label: Safe alternative
+      render: sql
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested severity
+      options:
+        - error (blocks: locks writes, rewrites tables, or deletes data)
+        - warning (risky, but sometimes fine)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to implement this rule myself

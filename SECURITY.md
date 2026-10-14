@@ -47,7 +47,7 @@ To help us triage and patch the issue as quickly as possible, please provide:
 ### In Scope (High Priority)
 - **Bypass of High-Risk Approvals**: Any mechanism allowing 🔴 HIGH-risk DDL (e.g., `DROP TABLE`, `DROP COLUMN`) to be executed or auto-approved **without** explicit human typing of `override` or passing `--confirm-destructive`.
 - **Agent Permission Escalation**: Any vulnerability allowing an AI agent to manipulate its own approval mode, tamper with IPC approval state, or bypass the MCP approval barrier via crafted prompt payloads.
-- **SQL Parser Evasion**: Malicious or obfuscated SQL constructs that bypass the 10 AST safety rules while still locking or rewriting tables in PostgreSQL.
+- **SQL Parser Evasion**: Malicious or obfuscated SQL constructs that bypass the AST safety rules while still locking or rewriting tables in PostgreSQL.
 - **Credential & Secret Leakage**: Database URLs, connection strings, or environment secrets appearing in unredacted audit logs (`.mgcheck/audit.jsonl`), CLI error outputs, or tool responses sent back to AI agents.
 - **Sandbox Escapes**: Code injection or container breakout vulnerabilities via Docker shadow DB management or PGlite WebAssembly execution.
 - **Installer & Hook Hijacking**: Vulnerabilities in `mgcheck setup`, `mgcheck hook install`, or uninstaller scripts that compromise local configuration files (`.cursorrules`, `CLAUDE.md`, Git hooks).
@@ -72,15 +72,16 @@ To help us triage and patch the issue as quickly as possible, please provide:
 
 ### 2. Credential Sanitization
 - Connection strings and database URLs are never written into `.mgcheck/audit.jsonl` or global logs.
-- Ephemeral Docker containers generate randomized credentials on random loopback ports (port 0) and are destroyed immediately upon process exit or shutdown.
+- Ephemeral Docker containers generate randomized credentials on a random host port (port 0) and are destroyed immediately upon process exit or shutdown.
 
 ### 3. Hard Guardrails on Destructive DDL
-- High-risk operations (`DROP TABLE`, `DROP COLUMN`) cannot be auto-approved under **any** mode, configuration flag, or environment variable.
+- High-risk operations (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`, `DROP SCHEMA`, `DROP DATABASE`) cannot be auto-approved under **any** mode, configuration flag, or environment variable.
 - In the interactive terminal watcher, high-risk queries are locked until the human explicitly types the literal string `override` (a simple Enter or `y` is strictly rejected).
 
 ### 4. Safe Real Database Application
+- `check_migration` only verifies by default. It touches the target database only when the agent passes `auto_apply: true`, which it should do only when you asked for the change to be applied.
 - Target database execution via `apply_migration` or CLI `--apply` requires:
-  1. Complete passage of all 10 AST safety rules.
+  1. Complete passage of the AST safety rules.
   2. Successful shadow execution without runtime exceptions.
   3. Explicit human confirmation or programmatic confirmation flag (`confirm_user_approved: true`).
 

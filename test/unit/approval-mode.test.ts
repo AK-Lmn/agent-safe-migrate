@@ -230,4 +230,28 @@ describe('Approval Modes & Dynamic Permission Gate', () => {
     expect(unconfirmedRes.isError).toBe(true);
     expect(JSON.parse(unconfirmedRes.content[0].text).error).toContain('User confirmation required');
   });
+
+  it('check_migration does not apply to the real database unless auto_apply is true', async () => {
+    setApprovalMode({ mode: 'auto' });
+    const original = process.env.DATABASE_URL;
+    // Unreachable on purpose: any connection attempt surfaces as applyError
+    process.env.DATABASE_URL = 'postgresql://mgcheck:test@127.0.0.1:1/none';
+    try {
+      const tool = await getTool('check_migration');
+      const safeSql = "SET lock_timeout = '5s';\nCREATE TABLE test_users (id serial PRIMARY KEY, name text);";
+
+      const verifyOnly = JSON.parse((await tool.handler({ migration_sql: safeSql, project_dir: projectDir, provider: 'pglite' })).content[0].text);
+      expect(verifyOnly.guardian.decision).toBe('auto_allowed');
+      expect(verifyOnly.applied).toBe(false);
+      expect(verifyOnly.applyError).toBeUndefined();
+      expect(verifyOnly.guardian.message).toContain('apply_migration');
+
+      const withApply = JSON.parse((await tool.handler({ migration_sql: safeSql, project_dir: projectDir, provider: 'pglite', auto_apply: true })).content[0].text);
+      expect(withApply.applied).toBe(false);
+      expect(withApply.applyError).toBeDefined();
+    } finally {
+      if (original === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = original;
+    }
+  }, 60_000);
 });

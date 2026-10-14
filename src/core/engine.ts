@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { MgcheckConfig, MigrationReport, DetectedMigration, ExecutionResult } from './types.js';
 import { detectMigration } from '../detector/index.js';
-import { analyze } from '../analyzer/index.js';
+import { analyze, DESTRUCTIVE_RULE_IDS } from '../analyzer/index.js';
 import { createShadowDatabase } from '../shadow/index.js';
 
 /**
@@ -74,7 +74,10 @@ export async function runCheck(
   }
 
   // 4. Build report
-  const hasBlockingViolations = analysis.violations.some((v) => v.severity === 'error');
+  // Destructive errors are allowed through once the user passes --confirm-destructive
+  const hasBlockingViolations = analysis.violations.some(
+    (v) => v.severity === 'error' && !(config.confirmDestructive && DESTRUCTIVE_RULE_IDS.has(v.ruleId))
+  );
   const executionFailed = execution !== null && !execution.success;
 
   // Check destructive violations against --confirm-destructive

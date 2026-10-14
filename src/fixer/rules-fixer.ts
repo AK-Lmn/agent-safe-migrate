@@ -1,4 +1,5 @@
 import type { RuleViolation } from '../core/types.js';
+import { DESTRUCTIVE_RULE_IDS } from '../analyzer/rules/index.js';
 import type { AppliedFix, FixResult } from './types.js';
 
 /**
@@ -91,8 +92,8 @@ export function fixMigrationSql(originalSql: string, violations: RuleViolation[]
 
   const violationRuleIds = new Set(violations.map((v) => v.ruleId));
 
-  // Check destructive operations (MG005, MG006)
-  if (violationRuleIds.has('MG005') || violationRuleIds.has('MG006')) {
+  // Check destructive operations (MG005, MG006, MG011–MG013)
+  if ([...violationRuleIds].some((id) => DESTRUCTIVE_RULE_IDS.has(id))) {
     hasDestructive = true;
   }
 

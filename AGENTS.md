@@ -26,7 +26,7 @@ All v0 deliverables from the project spec are fully implemented, typed, and test
 2. **PostgreSQL AST Parser** (`src/analyzer/parser.ts`):
    - Uses `pgsql-parser` (official PostgreSQL C parser compiled to WebAssembly) for true PostgreSQL AST parsing.
    - Extracts statement locations, lengths, and exact line numbers.
-   - Includes graceful regex splitting fallback for non-standard extensions.
+   - If the file fails to parse, statements are parsed one by one; any the parser still rejects are reported as MG014 and checked by text matching.
 3. **10 Production Safety Rules** (`src/analyzer/rules/`):
    - `MG001` (error): `CREATE INDEX` without `CONCURRENTLY` (locks writes).
    - `MG002` (error): `ALTER COLUMN TYPE` (triggers full table rewrite with `ACCESS EXCLUSIVE` lock).
@@ -38,6 +38,10 @@ All v0 deliverables from the project spec are fully implemented, typed, and test
    - `MG008` (warning): `RENAME TABLE` (breaking for zero-downtime deploys).
    - `MG009` (warning): Missing `lock_timeout` / `statement_timeout` before risky DDL.
    - `MG010` (warning): Missing rollback/down migration (skips Drizzle which doesn't support them).
+   - `MG011` (error): `TRUNCATE` (destructive; requires `--confirm-destructive`).
+   - `MG012` (error): `DROP SCHEMA` (destructive; requires `--confirm-destructive`).
+   - `MG013` (error): `DROP DATABASE` (destructive; requires `--confirm-destructive`).
+   - `MG014` (warning): Statement the PostgreSQL parser could not read (likely a syntax error).
 4. **Shadow Database Engine** (`src/shadow/`):
    - **Docker Provider** (`src/shadow/docker-postgres.ts`): Starts disposable `postgres:16-alpine` container on random port, runs seed + migration, tears down.
    - **PGlite Provider** (`src/shadow/pglite.ts`): In-process WebAssembly Postgres for fast CI environments without Docker (`--provider pglite`).
@@ -125,7 +129,7 @@ When picking up v1 development:
    - Require structured response: corrected SQL + rationale.
 3. **Fresh Re-verify Loop**:
    - Spin up a *fresh* shadow DB instance.
-   - Execute the fix and re-run all 10 rules.
+   - Execute the fix and re-run all rules.
    - Only return the fix if BOTH execution and rules pass.
 4. **Hard Guardrail**:
    - Cap at 1 fix attempt (no infinite loops).

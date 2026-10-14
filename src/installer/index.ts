@@ -865,7 +865,7 @@ When creating, modifying, or executing database migrations (SQL, Prisma, Drizzle
    - \`MG002\`: Never use \`ALTER COLUMN TYPE\` directly (use expand/contract pattern).
    - \`MG003\`: Always provide a \`DEFAULT\` value when adding \`NOT NULL\` columns.
    - \`MG004\`: Add constraints with \`NOT VALID\`, then validate them in a subsequent step.
-   - \`MG005\` / \`MG006\`: Never drop columns or tables without explicit user confirmation.
+   - \`MG005\` / \`MG006\` / \`MG011\`–\`MG013\`: Never drop columns, tables, schemas or databases, or TRUNCATE tables, without explicit user confirmation.
    - \`MG009\`: Always set \`SET lock_timeout = '5s';\` before risky DDL.
    - \`MG010\`: Provide a rollback / down migration file whenever applicable.
 ${GUARDIAN_RULE_END}

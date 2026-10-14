@@ -25,7 +25,7 @@ npx mgcheck
 
 [Quickstart](#-quickstart) ·
 [How it works](#-how-it-works) ·
-[Safety rules](#-the-10-safety-rules) ·
+[Safety rules](#%EF%B8%8F-the-14-safety-rules) ·
 [Showcase](SHOWCASE.md) ·
 [AI agents](#-ai-agent-integration-mcp) ·
 [CI](#-ci--cd) ·
@@ -69,7 +69,7 @@ This class of bug is getting **more common**, not less. AI coding agents (Claude
 
 | | |
 | :--- | :--- |
-| 🔬 **Real PostgreSQL parser** | Uses [`pgsql-parser`](https://www.npmjs.com/package/pgsql-parser) — PostgreSQL's own grammar compiled to WebAssembly — so rules match AST nodes, not fragile regexes. |
+| 🔬 **Real PostgreSQL parser** | Uses [`pgsql-parser`](https://www.npmjs.com/package/pgsql-parser) — PostgreSQL's own grammar compiled to WebAssembly — so rules inspect real AST nodes rather than guessing from text. Statements the parser can't read are flagged (`MG014`) and checked by text matching. |
 | 🧪 **Shadow database dry-run** | Executes the migration on an in-process [PGlite](https://pglite.dev/) instance (no Docker) or a disposable `postgres:16-alpine` container, then throws it away. |
 | 🚦 **Risk-based approval gate** | Every migration is classified 🟢 LOW / 🟡 MEDIUM / 🔴 HIGH. HIGH risk is **never** auto-approved, under any configuration. |
 | 🤖 **MCP server for AI agents** | One command wires `check_migration`, `analyze_migration` and `apply_migration` tools into 13 AI clients. |
@@ -142,7 +142,7 @@ npx mgcheck hook install
  └──────────────────────────────┬───────────────────────────────┘
                                 ▼
  ┌──────────────────────────────────────────────────────────────┐
- │ ② Analyze     PostgreSQL AST (WASM) checked against 10 rules │
+ │ ② Analyze     PostgreSQL AST (WASM) checked against 14 rules │
  │               → locks, table rewrites, data loss, rollbacks  │
  └──────────────────────────────┬───────────────────────────────┘
                                 ▼
@@ -166,7 +166,7 @@ npx mgcheck hook install
 
 ---
 
-## 🛡️ The 10 Safety Rules
+## 🛡️ The 14 Safety Rules
 
 `error` rules block the migration (🔴 HIGH risk). `warning` rules are reported and require approval (🟡 MEDIUM risk).
 
@@ -182,6 +182,10 @@ npx mgcheck hook install
 | `MG008` | warning | `RENAME TABLE` | Breaks running queries during rolling deploys. | Rename, then create a view with the old name during the transition. | — |
 | `MG009` | warning | DDL without `lock_timeout` | A blocked DDL statement queues every query behind it. | `SET lock_timeout = '5s';` before DDL. | ✅ |
 | `MG010` | warning | No down / rollback migration | No clean way back if the deploy goes wrong. | Ship a matching rollback (e.g. `.down.sql`). | — |
+| `MG011` | error | `TRUNCATE` | Instantly deletes every row (and with `CASCADE`, rows in referencing tables). | Delete specific rows in batches; requires `--confirm-destructive`. | — |
+| `MG012` | error | `DROP SCHEMA` | Deletes the schema and, with `CASCADE`, everything in it. | Drop objects individually after review; requires `--confirm-destructive`. | — |
+| `MG013` | error | `DROP DATABASE` | Deletes an entire database. | Never in a migration; requires `--confirm-destructive`. | — |
+| `MG014` | warning | SQL the parser can't read | Usually a typo that fails at deploy time; the other rules can only text-match it. | Fix the syntax, or verify with `mgcheck run`. Set to `error` to block. | — |
 
 Any rule can be re-leveled or disabled per project — see [Configuration](#%EF%B8%8F-configuration).
 
@@ -204,7 +208,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_email ON users(email);
 ALTER TABLE users ADD COLUMN is_active boolean DEFAULT false NOT NULL;
 ```
 
-Destructive statements (`DROP TABLE`, `DROP COLUMN`) are never rewritten automatically.
+Destructive statements (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`, `DROP SCHEMA`, `DROP DATABASE`) are never rewritten automatically.
 
 </details>
 
@@ -249,9 +253,9 @@ For any other MCP-compatible client:
 
 | Tool | What it does |
 | :--- | :--- |
-| `check_migration` | AST analysis **and** shadow-DB execution (`pglite` by default). Accepts optional base schema SQL and target `db_url`. |
+| `check_migration` | AST analysis **and** shadow-DB execution (`pglite` by default). Verifies only; it applies to the target database only when called with `auto_apply: true`. |
 | `analyze_migration` | Fast static analysis only — no database required. |
-| `apply_migration` | Applies verified SQL to the real target database. Always requires approval in the watcher. Target URL falls back to `DATABASE_URL` / `TARGET_DATABASE_URL`. |
+| `apply_migration` | Applies verified SQL to the real target database. The agent must pass `confirm_user_approved: true`; 🟢 LOW (and 🟡 MEDIUM in `auto` mode) then run without a watcher prompt, anything else needs approval in the watcher. Target URL falls back to `DATABASE_URL` / `TARGET_DATABASE_URL`. |
 
 ### The live watcher
 
@@ -304,7 +308,7 @@ Resolution order: `MGCHECK_MODE` env var → project config → global settings 
 | Command | Description |
 | :--- | :--- |
 | `npx mgcheck` · `npx mgcheck setup` | Detect AI clients, register the MCP server, launch the watcher. Aliases: `init`, `install-mcp`. |
-| `npx mgcheck analyze <path>` | Static AST analysis against the 10 rules. No database needed. |
+| `npx mgcheck analyze <path>` | Static AST analysis against the safety rules. No database needed. |
 | `npx mgcheck run <path>` | Analysis + shadow-DB execution, with optional apply to a target DB. |
 | `npx mgcheck fix <path>` | Rewrite unsafe SQL into zero-downtime patterns and verify on a shadow DB. |
 | `npx mgcheck mode [auto\|manual]` | View or change approval mode (`--project`, `--levels`). |
@@ -533,7 +537,6 @@ These are real gaps in the current codebase — each one is a self-contained, we
 
 **🟢 Good first contributions**
 
-- **New rule: `TRUNCATE`** — destructive, but not flagged today (`--confirm-destructive` already mentions it).
 - **New rule: `ALTER COLUMN ... SET NOT NULL`** — scans the whole table under an `ACCESS EXCLUSIVE` lock; the safe path is a `CHECK (col IS NOT NULL) NOT VALID` constraint, validate, then `SET NOT NULL`.
 - **New rule: `VACUUM FULL` / `CLUSTER`** — full table rewrites that block reads and writes.
 - **YAML config** — `.mgcheckrc.yml` is in the config search list but is currently parsed as JSON.
@@ -583,11 +586,11 @@ Rules are small, deterministic and isolated — the easiest way into the codebas
    ```ts
    import type { Rule } from './types.js';
 
-   export const truncateTable: Rule = {
-     id: 'MG011',
-     name: 'truncate-table',
+   export const vacuumFull: Rule = {
+     id: 'MG015',
+     name: 'vacuum-full',
      severity: 'error',
-     description: 'TRUNCATE permanently deletes all rows',
+     description: 'VACUUM FULL rewrites the table under an exclusive lock',
      check(statements, context) {
        // Walk statement.ast and return RuleViolation[] with a plain-English
        // message explaining the danger and a `suggestion` with the safe pattern.
@@ -598,7 +601,7 @@ Rules are small, deterministic and isolated — the easiest way into the codebas
 
 2. **Register** it in [`src/analyzer/rules/index.ts`](./src/analyzer/rules/index.ts).
 3. **Test** it in [`test/unit/rules.test.ts`](./test/unit/rules.test.ts) — cover both the unsafe and the safe form. Add a fixture under `test/fixtures/migrations/` if useful.
-4. **Document** it in the [rules table](#%EF%B8%8F-the-10-safety-rules) above.
+4. **Document** it in the [rules table](#%EF%B8%8F-the-14-safety-rules) above.
 
 Look at [`create-index-not-concurrent.ts`](./src/analyzer/rules/create-index-not-concurrent.ts) for a complete example.
 
@@ -615,7 +618,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for more detail.
 
 ```
 src/
-├── analyzer/     # PostgreSQL AST parsing + the 10 rules
+├── analyzer/     # PostgreSQL AST parsing + the safety rules
 ├── detector/     # Migration framework detection
 ├── shadow/       # PGlite and Docker shadow databases
 ├── fixer/        # Zero-downtime auto-fix + verification
